@@ -5,49 +5,22 @@ project(VCVRackMcpServer VERSION 2.0.0 LANGUAGES CXX)
 # vcv-rack-mcp-server — VCV Rack 2 Plugin  (CMake build)
 #
 # USAGE:
-#   cmake -B build -DRACK_DIR=/path/to/Rack-SDK-2.x.x
+#   cmake -B build
 #   cmake --build build
 #   cmake --install build   # installs to Rack plugins folder
 #
-# CMake will automatically download cpp-httplib via FetchContent.
-# Set RACK_DIR to your Rack SDK path (or set the env variable).
+# CMake automatically downloads:
+#   - cpp-httplib (into dep/include)
+#   - Rack SDK (into build/_deps/rack-sdk, cached between builds)
+#
+# Optional: Use your own Rack SDK with -DRACK_DIR=/path/to/Rack-SDK
 # =============================================================================
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# ── Rack SDK location ─────────────────────────────────────────────────────────
-if(NOT DEFINED RACK_DIR)
-  if(DEFINED ENV{RACK_DIR})
-    set(RACK_DIR $ENV{RACK_DIR})
-  else()
-    message(FATAL_ERROR
-      "RACK_DIR not set. Pass -DRACK_DIR=/path/to/Rack-SDK or set the RACK_DIR env variable.\n"
-      "Download the Rack SDK from: https://vcvrack.com/downloads")
-  endif()
-endif()
-message(STATUS "Using Rack SDK at: ${RACK_DIR}")
-
-# ── FetchContent: cpp-httplib (header-only, MIT) ──────────────────────────────
-include(FetchContent)
-
-FetchContent_Declare(
-  httplib
-  URL      https://github.com/yhirose/cpp-httplib/releases/download/v0.18.0/httplib.h
-  URL_HASH SHA256=0                          # set to real hash for reproducible builds
-  DOWNLOAD_NO_EXTRACT TRUE                   # it's a single header, not an archive
-  DOWNLOAD_DIR ${CMAKE_BINARY_DIR}/_deps/httplib
-)
-FetchContent_MakeAvailable(httplib)
-
-# Create an interface target so we can link against it cleanly
-add_library(httplib INTERFACE)
-target_include_directories(httplib INTERFACE
-  ${CMAKE_BINARY_DIR}/_deps/httplib
-)
-
-# ── Detect platform/architecture ─────────────────────────────────────────────
+# ── Detect platform/architecture early ───────────────────────────────────────
 if(APPLE)
   if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     set(RACK_ARCH "mac-arm64")
@@ -63,6 +36,90 @@ else()
   set(PLUGIN_EXT ".so")
 endif()
 
+# ── Rack SDK auto-download and location ──────────────────────────────────────
+set(RACK_SDK_VERSION "2.6.6")
+
+if(NOT DEFINED RACK_DIR)
+  if(DEFINED ENV{RACK_DIR})
+    set(RACK_DIR $ENV{RACK_DIR})
+  else()
+    # Auto-download Rack SDK if not provided
+    set(RACK_SDK_URL "https://vcvrack.com/downloads/Rack-SDK-${RACK_SDK_VERSION}-${RACK_ARCH}.zip")
+    set(RACK_SDK_DOWNLOAD_DIR "${CMAKE_BINARY_DIR}/_deps/rack-sdk")
+    set(RACK_DIR "${RACK_SDK_DOWNLOAD_DIR}/Rack-SDK")
+    
+    if(NOT EXISTS "${RACK_DIR}/include/rack.hpp")
+      message(STATUS "Rack SDK not found. Downloading from ${RACK_SDK_URL}...")
+      
+      file(MAKE_DIRECTORY "${RACK_SDK_DOWNLOAD_DIR}")
+      set(RACK_SDK_ZIP "${RACK_SDK_DOWNLOAD_DIR}/Rack-SDK.zip")
+      
+      # Download SDK
+      file(DOWNLOAD
+        "${RACK_SDK_URL}"
+        "${RACK_SDK_ZIP}"
+        STATUS RACK_SDK_DOWNLOAD_STATUS
+        SHOW_PROGRESS
+        TLS_VERIFY ON
+      )
+      
+      list(GET RACK_SDK_DOWNLOAD_STATUS 0 RACK_SDK_DOWNLOAD_CODE)
+      list(GET RACK_SDK_DOWNLOAD_STATUS 1 RACK_SDK_DOWNLOAD_MESSAGE)
+      
+      if(NOT RACK_SDK_DOWNLOAD_CODE EQUAL 0)
+        message(FATAL_ERROR "Failed to download Rack SDK: ${RACK_SDK_DOWNLOAD_MESSAGE}")
+      endif()
+      
+      # Extract SDK
+      message(STATUS "Extracting Rack SDK...")
+      file(ARCHIVE_EXTRACT
+        INPUT "${RACK_SDK_ZIP}"
+        DESTINATION "${RACK_SDK_DOWNLOAD_DIR}"
+      )
+      
+      # Verify extraction
+      if(NOT EXISTS "${RACK_DIR}/include/rack.hpp")
+        message(FATAL_ERROR "Failed to extract Rack SDK. rack.hpp not found at ${RACK_DIR}/include/rack.hpp")
+      endif()
+      
+      message(STATUS "Rack SDK downloaded and extracted successfully")
+    else()
+      message(STATUS "Using cached Rack SDK at: ${RACK_DIR}")
+    endif()
+  endif()
+endif()
+
+message(STATUS "Using Rack SDK at: ${RACK_DIR}")
+
+# ── Dependency auto-download: cpp-httplib (header-only, MIT) ─────────────────
+set(HTTPLIB_VERSION_FILE ${CMAKE_CURRENT_SOURCE_DIR}/deps/httplib.version)
+if(EXISTS ${HTTPLIB_VERSION_FILE})
+  file(READ ${HTTPLIB_VERSION_FILE} HTTPLIB_VERSION)
+  string(STRIP "${HTTPLIB_VERSION}" HTTPLIB_VERSION)
+else()
+  set(HTTPLIB_VERSION "v0.18.0")
+endif()
+
+set(HTTPLIB_URL https://raw.githubusercontent.com/yhirose/cpp-httplib/${HTTPLIB_VERSION}/httplib.h)
+set(HTTPLIB_INCLUDE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dep/include)
+set(HTTPLIB_HEADER ${HTTPLIB_INCLUDE_DIR}/httplib.h)
+
+if(NOT EXISTS ${HTTPLIB_HEADER})
+  file(MAKE_DIRECTORY ${HTTPLIB_INCLUDE_DIR})
+  message(STATUS "Downloading cpp-httplib ${HTTPLIB_VERSION}...")
+  file(DOWNLOAD
+    ${HTTPLIB_URL}
+    ${HTTPLIB_HEADER}
+    STATUS HTTPLIB_DOWNLOAD_STATUS
+    TLS_VERIFY ON
+  )
+  list(GET HTTPLIB_DOWNLOAD_STATUS 0 HTTPLIB_DOWNLOAD_CODE)
+  list(GET HTTPLIB_DOWNLOAD_STATUS 1 HTTPLIB_DOWNLOAD_MESSAGE)
+  if(NOT HTTPLIB_DOWNLOAD_CODE EQUAL 0)
+    message(FATAL_ERROR "Failed to download cpp-httplib: ${HTTPLIB_DOWNLOAD_MESSAGE}")
+  endif()
+endif()
+
 # ── Rack SDK include / link paths ─────────────────────────────────────────────
 set(RACK_INCLUDE_DIR  ${RACK_DIR}/include)
 set(RACK_DEP_DIR      ${RACK_DIR}/dep/include)
@@ -74,8 +131,8 @@ endif()
 
 # ── Plugin shared library ─────────────────────────────────────────────────────
 add_library(VCVRackMcpServer MODULE
-  src/plugin.cpp
-  src/RackMcpServer.cpp
+  plugin.cpp
+  RackMcpServer.cpp
 )
 
 set_target_properties(VCVRackMcpServer PROPERTIES
@@ -87,20 +144,29 @@ set_target_properties(VCVRackMcpServer PROPERTIES
 target_include_directories(VCVRackMcpServer PRIVATE
   ${RACK_INCLUDE_DIR}
   ${RACK_DEP_DIR}
-  ${CMAKE_BINARY_DIR}/_deps/httplib   # httplib.h lives here after FetchContent
+  ${HTTPLIB_INCLUDE_DIR}
 )
 
 target_compile_options(VCVRackMcpServer PRIVATE
   -fPIC
   -O3
-  -march=nocona        # Rack SDK minimum (SSE4.2 equivalent baseline)
   -funsafe-math-optimizations
   -fno-omit-frame-pointer
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wno-unused-parameter>
 )
 
+# Platform-specific optimization flags
+if(RACK_ARCH STREQUAL "lin-x64" OR RACK_ARCH STREQUAL "win-x64")
+  target_compile_options(VCVRackMcpServer PRIVATE -march=nocona)  # SSE4.2 baseline for x64
+elseif(RACK_ARCH STREQUAL "mac-x64")
+  target_compile_options(VCVRackMcpServer PRIVATE -march=nehalem)  # SSE4.2 for Intel Mac
+endif()
+# mac-arm64 doesn't need -march flag
+
+# Define platform macro (replace hyphens with underscores for valid C++ identifiers)
+string(REPLACE "-" "_" RACK_ARCH_MACRO "${RACK_ARCH}")
 target_compile_definitions(VCVRackMcpServer PRIVATE
-  ARCH_${RACK_ARCH}   # lets source code #ifdef on arch if needed
+  ARCH_${RACK_ARCH_MACRO}   # lets source code #ifdef on arch if needed
 )
 
 if(APPLE)

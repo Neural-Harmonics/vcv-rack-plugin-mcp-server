@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cmake --build build --parallel)",
+      "Bash(make dist)"
+    ]
+  }
+}

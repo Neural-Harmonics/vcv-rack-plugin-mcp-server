@@ -4,21 +4,17 @@ on:
   push:
     branches: [main, develop]
     tags:
-      - 'v*'          # triggers a release when you push a version tag like v2.0.0
+      - 'v*'
   pull_request:
     branches: [main]
-
-env:
-  RACK_SDK_VERSION: 2.6.6
-  RACK_PLUGIN_TOOLCHAIN_DIR: /home/build/rack-plugin-toolchain
 
 defaults:
   run:
     shell: bash
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Job 1 — Stamp the plugin version with git short-sha on non-release builds
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Job 1 — Stamp plugin.json version with git short-sha on non-release builds
+# =============================================================================
 jobs:
   modify-plugin-version:
     name: Stamp plugin version
@@ -41,105 +37,149 @@ jobs:
           jq --arg V "$pluginversion-$gitrev" '.version=$V' plugin.json > plugin.json.tmp
           mv plugin.json.tmp plugin.json
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Job 2 — Build for Windows x64 and Linux x64 (via Docker toolchain)
-# ─────────────────────────────────────────────────────────────────────────────
-  build-win-lin:
-    name: Build (${{ matrix.platform }})
+# =============================================================================
+# Job 2 — Build Linux x64 (native runner, CMake)
+# =============================================================================
+  build-linux:
+    name: Build (lin-x64)
     needs: modify-plugin-version
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/qno/rack-plugin-toolchain-win-linux
-      options: --user root
-    strategy:
-      fail-fast: false
-      matrix:
-        platform: [win-x64, lin-x64]
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: actions/cache@v4
-        id: plugin-version-cache
         with:
           path: plugin.json
           key: ${{ github.sha }}-${{ github.run_id }}
 
-      # Download cpp-httplib before the Rack toolchain compiles sources
-      - name: Download cpp-httplib dependency
-        run: make dep
-
-      - name: Build plugin (${{ matrix.platform }})
+      - name: Install build tools
         run: |
-          export PLUGIN_DIR=$GITHUB_WORKSPACE
-          export RACK_SDK_VERSION=${{ env.RACK_SDK_VERSION }}
-          pushd ${{ env.RACK_PLUGIN_TOOLCHAIN_DIR }}
-          make plugin-build-${{ matrix.platform }}
+          sudo apt-get update -qq
+          sudo apt-get install -y cmake ninja-build jq zip
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Cache Rack SDK
+        uses: actions/cache@v4
         with:
-          name: ${{ matrix.platform }}
-          path: ${{ env.RACK_PLUGIN_TOOLCHAIN_DIR }}/plugin-build
+          path: build/_deps/rack-sdk
+          key: rack-sdk-lin-x64-${{ hashFiles('CMakeLists.txt') }}
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Job 3 — Build for macOS x64 and ARM64 (native runners)
-# ─────────────────────────────────────────────────────────────────────────────
+      - name: Configure + build
+        run: make all BUILD_DIR=build
+
+      - name: Package .vcvplugin
+        run: make dist BUILD_DIR=build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lin-x64
+          path: dist/*.vcvplugin
+
+# =============================================================================
+# Job 3 — Build macOS x64 and ARM64 (native runners, CMake)
+# =============================================================================
   build-mac:
-    name: Build (mac-${{ matrix.platform }})
+    name: Build (mac-${{ matrix.arch }})
     needs: modify-plugin-version
     runs-on: macos-latest
     strategy:
       fail-fast: false
       matrix:
+        arch: [x64, arm64]
         include:
-          # From Rack 2.6.0, Mac SDKs are separate per-arch zips (no combined zip)
-          - platform: x64
-            cross_compile: x86_64-apple-darwin
-          - platform: arm64
-            cross_compile: arm64-apple-darwin
+          - arch: x64
+            cmake_osx_arch: x86_64
+          - arch: arm64
+            cmake_osx_arch: arm64
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: actions/cache@v4
-        id: plugin-version-cache
         with:
           path: plugin.json
           key: ${{ github.sha }}-${{ github.run_id }}
 
-      - name: Download Rack SDK (mac-${{ matrix.platform }})
-        run: |
-          cd $HOME
-          wget -O Rack-SDK.zip \
-            "https://vcvrack.com/downloads/Rack-SDK-${{ env.RACK_SDK_VERSION }}-mac-${{ matrix.platform }}.zip"
-          unzip -q Rack-SDK.zip
+      - name: Install build tools
+        run: brew install cmake jq zip
 
-      - name: Download cpp-httplib dependency
-        run: make dep
-
-      - name: Build plugin (mac-${{ matrix.platform }})
-        run: |
-          export RACK_DIR=$HOME/Rack-SDK
-          export CROSS_COMPILE=${{ matrix.cross_compile }}
-          make dist
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+      - name: Cache Rack SDK (mac-${{ matrix.arch }})
+        uses: actions/cache@v4
         with:
-          name: mac-${{ matrix.platform }}
+          path: build/_deps/rack-sdk
+          key: rack-sdk-mac-${{ matrix.arch }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure + build (mac-${{ matrix.arch }})
+        run: |
+          cmake -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=${{ matrix.cmake_osx_arch }}
+          cmake --build build --parallel
+
+      - name: Package .vcvplugin
+        run: make dist BUILD_DIR=build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-${{ matrix.arch }}
           path: dist/*.vcvplugin
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Job 4 — Publish GitHub Release (only on version tags like v2.0.0)
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Job 4 — Build Windows x64 (native runner, CMake + MSYS2/MinGW)
+# =============================================================================
+  build-windows:
+    name: Build (win-x64)
+    needs: modify-plugin-version
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: plugin.json
+          key: ${{ github.sha }}-${{ github.run_id }}
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-ninja
+            zip
+            jq
+
+      - name: Cache Rack SDK (win-x64)
+        uses: actions/cache@v4
+        with:
+          path: build/_deps/rack-sdk
+          key: rack-sdk-win-x64-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Configure + build
+        run: |
+          cmake -B build \
+            -G "Ninja" \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Package .vcvplugin
+        run: make dist BUILD_DIR=build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-x64
+          path: dist/*.vcvplugin
+
+# =============================================================================
+# Job 5 — Publish GitHub Release (only on version tags like v2.0.0)
+# =============================================================================
   publish:
     name: Publish release
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    needs: [build-win-lin, build-mac]
+    needs: [build-linux, build-mac, build-windows]
     permissions:
       contents: write
     steps:

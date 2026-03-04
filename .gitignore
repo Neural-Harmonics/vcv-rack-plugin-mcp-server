@@ -1,0 +1,25 @@
+# Build output
+build/
+dist/
+
+# Downloaded dependencies (auto-fetched at build time)
+dep/
+deps/httplib.version
+
+# VCV Rack plugin package
+*.vcvplugin
+
+# macOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# CMake
+CMakeUserPresets.json

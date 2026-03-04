@@ -42,6 +42,8 @@
 #include <rack.hpp>
 #include <app/RackWidget.hpp>
 #include <app/ModuleWidget.hpp>
+#include <patch.hpp>
+#include <tag.hpp>
 
 #include <thread>
 #include <atomic>
@@ -182,10 +184,11 @@ static std::string serializeModel(plugin::Model* model) {
     s += jsonKVs("name", model->name);
     // Tags
     s += jsonStr("tags") + ": [";
-    for (int i = 0; i < (int)model->tags.size(); i++) {
-        const std::string& tag = rack::plugin::getTagAliases(model->tags[i]).front();
-        s += jsonStr(tag);
-        if (i < (int)model->tags.size() - 1) s += ", ";
+    int tagIdx = 0;
+    for (int tagId : model->tagIds) {
+        if (tagIdx > 0) s += ", ";
+        s += jsonStr(rack::tag::getTag(tagId));
+        tagIdx++;
     }
     s += "], ";
     s += jsonKVs("description", model->description, true);
@@ -200,9 +203,11 @@ static std::string serializePlugin(plugin::Plugin* plug) {
     s += jsonKVs("author", plug->author);
     s += jsonKVs("version", plug->version);
     s += jsonStr("modules") + ": [";
-    for (int i = 0; i < (int)plug->models.size(); i++) {
-        s += serializeModel(plug->models[i]);
-        if (i < (int)plug->models.size() - 1) s += ", ";
+    bool firstModel = true;
+    for (plugin::Model* m : plug->models) {
+        if (!firstModel) s += ", ";
+        s += serializeModel(m);
+        firstModel = false;
     }
     s += "]";
     s += "}";
@@ -383,7 +388,7 @@ public:
 
             // Position on the rack canvas (in rack units, 1 HP = 15px)
             APP->scene->rack->setModulePosForce(
-                APP->scene->rack->getModuleWidget(module),
+                APP->scene->rack->getModule(module->id),
                 math::Vec(x, y)
             );
 
@@ -402,8 +407,8 @@ public:
             if (!mod) { res.status = 404; res.set_content(err("Module not found"), "application/json"); return; }
 
             // Remove widget + module via RackWidget helper (thread-safe path)
-            ModuleWidget* mw = APP->scene->rack->getModuleWidget(mod);
-            if (mw) APP->scene->rack->removeModuleWidget(mw);
+            ModuleWidget* mw = APP->scene->rack->getModule(mod->id);
+            if (mw) APP->scene->rack->removeModule(mw);
             APP->engine->removeModule(mod);
             delete mod;
 
@@ -496,8 +501,8 @@ public:
                     // Tag filter
                     if (!tagFilter.empty()) {
                         bool hasTag = false;
-                        for (int t : model->tags) {
-                            const std::string& tagName = rack::plugin::getTagAliases(t).front();
+                        for (int t : model->tagIds) {
+                            std::string tagName = rack::tag::getTag(t);
                             std::string tagNameLow = tagName;
                             std::transform(tagNameLow.begin(), tagNameLow.end(), tagNameLow.begin(), ::tolower);
                             if (tagFilter.find(tagNameLow) != std::string::npos) { hasTag = true; break; }
@@ -550,7 +555,7 @@ public:
         svr.Post("/patch/save", [](const httplib::Request& req, httplib::Response& res) {
             std::string path = parseJsonString(req.body, "path");
             if (path.empty()) { res.status = 400; res.set_content(err("Missing 'path'"), "application/json"); return; }
-            APP->patch->saveAs(path);
+            APP->patch->save(path);
             res.set_content(ok("{" + jsonKVs("saved", path, true) + "}"), "application/json");
         });
 
@@ -711,8 +716,8 @@ struct RackMcpServerWidget : ModuleWidget {
             std::string msg = running
                 ? "Running on http://127.0.0.1:" + std::to_string(port)
                 : "Stopped";
-            // Display in Rack's notification area
-            APP->scene->addChild(createTransientLabel(msg));
+            // Display status in log (createTransientLabel not available in SDK)
+            INFO("RackMcpServer: %s", msg.c_str());
         }));
     }
 };

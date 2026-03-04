@@ -17,17 +17,18 @@ Claude ↔ MCP Server (Python) ↔ HTTP ↔ vcv-rack-mcp-server plugin (C++) ↔
 3. Restart Rack — the module appears in the browser under **Utility**
 
 ### From GitHub Releases (manual)
-1. Go to [Releases](https://github.com/YOUR_USERNAME/vcv-rack-mcp-server/releases)
-2. Download the `.vcvplugin` for your OS (Windows / Mac / Linux)
+
+1. Go to [Releases](https://github.com/bisegni/vcvrack-mcp-server/releases)
+2. Download the `.vcvplugin` for your OS (Windows / macOS / Linux)
 3. Double-click it — Rack installs it automatically
 
 ---
 
 ## Quick start
 
-1. Add the **MCP Bridge** module to any patch
+1. Add the **Rack MCP Server** module to any patch
 2. Set the **port** knob (default: **2600**)
-3. Click the **Enable** button — the LED turns green
+3. Click **Enable** — the LED turns green
 4. Run the MCP server:
    ```bash
    pip install mcp httpx
@@ -39,7 +40,8 @@ Claude ↔ MCP Server (Python) ↔ HTTP ↔ vcv-rack-mcp-server plugin (C++) ↔
      "mcpServers": {
        "vcvrack": {
          "command": "python",
-         "args": ["/absolute/path/to/vcv_rack_mcp_server.py"]
+         "args": ["/absolute/path/to/vcv_rack_mcp_server.py"],
+         "env": { "RACK_PORT": "2600" }
        }
      }
    }
@@ -50,39 +52,41 @@ Claude ↔ MCP Server (Python) ↔ HTTP ↔ vcv-rack-mcp-server plugin (C++) ↔
 
 ## Building from source
 
-### Prerequisites
-- **Rack SDK 2.x** — [download here](https://vcvrack.com/downloads)
-- C++17 compiler (GCC 9+, Clang 10+, MSVC 2019+)
-- `curl` or `wget` (for dependency download)
+No manual dependency downloads required — the build system fetches the Rack SDK
+and `cpp-httplib` automatically on first run.
 
-### Option A — Makefile (VCV Library standard)
+### Prerequisites
+
+- CMake 3.21+ **or** GNU Make
+- C++17 compiler (GCC 9+, Clang 10+, or MSYS2/MinGW on Windows)
+- `curl` or `wget` (for the Makefile path; CMake uses its own downloader)
+- `jq` + `zip` (only for `make dist`)
+
+### Using Make (recommended for quick builds)
 
 ```bash
-export RACK_DIR=/path/to/Rack-SDK-2.x.x
-
-make dep     # downloads cpp-httplib automatically (once)
-make         # builds plugin .so / .dylib / .dll
-make install # installs to your Rack plugins folder
-make dist    # creates vcv-rack-mcp-server-VERSION-PLATFORM.vcvplugin
+make           # configure + download deps + build
+make install   # install to your Rack plugins folder
+make dist      # create VCVRackMcpServer-VERSION-PLATFORM.vcvplugin in dist/
+make clean     # remove build/ and dist/
 ```
 
-### Option B — CMake (IDE-friendly, auto-downloads everything)
+Already have a Rack SDK? Skip the download:
 
 ```bash
-cmake -B build -DRACK_DIR=/path/to/Rack-SDK-2.x.x
-cmake --build build
+make RACK_DIR=/path/to/Rack-SDK
+```
+
+### Using CMake directly (IDE-friendly)
+
+```bash
+cmake -B build
+cmake --build build --parallel
 cmake --install build
 ```
 
-CMake uses `FetchContent` to download `cpp-httplib` automatically — no manual steps.
-
-### Tip: find your Rack SDK path
-
-| OS | Default location |
-|---|---|
-| Linux | `~/Rack-SDK` (wherever you unzipped it) |
-| macOS | `~/Rack-SDK` |
-| Windows | `C:\Users\YOU\Rack-SDK` |
+Pass `-DRACK_DIR=/path/to/Rack-SDK` to use an existing SDK instead of downloading one.
+Downloaded SDKs are cached in `build/_deps/` and reused on subsequent builds.
 
 ---
 
@@ -118,7 +122,7 @@ All responses: `{ "status": "ok", "data": ... }` or `{ "status": "error", "messa
 | `rack_status` | Check Rack is reachable |
 | `rack_list_modules` | See what's in the patch |
 | `rack_get_module` | Inspect params & ports |
-| `rack_library_search` | **Find modules by name/tags** |
+| `rack_library_search` | Find modules by name/tags |
 | `rack_library_plugin` | Browse a plugin's catalogue |
 | `rack_add_module` | Add a module |
 | `rack_remove_module` | Remove a module |
@@ -133,17 +137,23 @@ All responses: `{ "status": "ok", "data": ... }` or `{ "status": "error", "messa
 
 ## CI / Releasing
 
-GitHub Actions (`.github/workflows/build-plugin.yml`) automatically:
+GitHub Actions (`.github/workflows/build-plugin.yml`) builds natively on every push:
 
-- Builds for **Windows x64**, **Linux x64**, **macOS x64**, **macOS ARM64** on every push
-- Creates a **GitHub Release** with all four `.vcvplugin` packages when you push a version tag:
+| Platform | Runner | Toolchain |
+| --- | --- | --- |
+| Linux x64 | `ubuntu-latest` | GCC + CMake |
+| macOS x64 | `macos-latest` | Clang + CMake |
+| macOS ARM64 | `macos-latest` | Clang + CMake (cross-compile) |
+| Windows x64 | `windows-latest` | MSYS2/MinGW64 + CMake |
+
+To publish a release, tag the commit with a version matching `plugin.json`:
 
 ```bash
 git tag v2.0.0
 git push origin v2.0.0
 ```
 
-The tag version must match `plugin.json` → `"version"`.
+GitHub Actions will build all four platforms and attach the `.vcvplugin` files to a GitHub Release automatically.
 
 ---
 
@@ -159,5 +169,5 @@ See the [VCV Library guide](https://vcvrack.com/manual/PluginDevelopmentTutorial
 
 ## License
 
-MIT — see [LICENSE](LICENSE).  
+MIT — see [LICENSE](LICENSE).
 Uses [cpp-httplib](https://github.com/yhirose/cpp-httplib) (MIT).
