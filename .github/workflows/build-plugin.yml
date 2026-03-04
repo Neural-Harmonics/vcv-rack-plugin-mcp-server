@@ -9,7 +9,7 @@ on:
     branches: [main]
 
 env:
-  rack-sdk-version: latest
+  rack-sdk-version: 2.6.6
   rack-plugin-toolchain-dir: /home/build/rack-plugin-toolchain
 
 defaults:
@@ -73,6 +73,7 @@ jobs:
       - name: Build plugin (${{ matrix.platform }})
         run: |
           export PLUGIN_DIR=$GITHUB_WORKSPACE
+          export RACK_SDK_VERSION=${{ env.rack-sdk-version }}
           pushd ${{ env.rack-plugin-toolchain-dir }}
           make plugin-build-${{ matrix.platform }}
 
@@ -92,7 +93,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [x64, arm64]
+        include:
+          # From Rack 2.6.0, Mac SDKs are separate per-arch zips (no combined zip)
+          - platform: x64
+            sdk_zip: Rack-SDK-${{ env.rack-sdk-version }}-mac-x64.zip
+            cross_compile: x86_64-apple-darwin
+          - platform: arm64
+            sdk_zip: Rack-SDK-${{ env.rack-sdk-version }}-mac-arm64.zip
+            cross_compile: arm64-apple-darwin
     steps:
       - uses: actions/checkout@v4
         with:
@@ -104,14 +112,11 @@ jobs:
           path: plugin.json
           key: ${{ github.sha }}-${{ github.run_id }}
 
-      - name: Install build tools
-        run: brew install curl wget
-
-      - name: Download Rack SDK
+      - name: Download Rack SDK (mac-${{ matrix.platform }})
         run: |
           cd $HOME
           wget -O Rack-SDK.zip \
-            "https://vcvrack.com/downloads/Rack-SDK-${{ env.rack-sdk-version }}-mac-x64+arm64.zip"
+            "https://vcvrack.com/downloads/${{ matrix.sdk_zip }}"
           unzip -q Rack-SDK.zip
 
       - name: Download cpp-httplib dependency
@@ -119,11 +124,8 @@ jobs:
 
       - name: Build plugin (mac-${{ matrix.platform }})
         run: |
-          CROSS_COMPILE_TARGET_x64=x86_64-apple-darwin
-          CROSS_COMPILE_TARGET_arm64=arm64-apple-darwin
           export RACK_DIR=$HOME/Rack-SDK
-          export CROSS_COMPILE=CROSS_COMPILE_TARGET_${{ matrix.platform }}
-          export CROSS_COMPILE=${!CROSS_COMPILE}
+          export CROSS_COMPILE=${{ matrix.cross_compile }}
           make dist
 
       - name: Upload artifact
@@ -161,9 +163,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: vcv-rack-mcp-server ${{ github.ref_name }}
+          name: vcv-rack-plugin-mcp-server ${{ github.ref_name }}
           body: |
-            ## vcv-rack-mcp-server ${{ github.ref_name }}
+            ## vcv-rack-plugin-mcp-server ${{ github.ref_name }}
 
             VCV Rack 2 plugin: exposes Rack internals to AI clients (Claude, Cursor, etc.) via HTTP/MCP.
 
