@@ -9,8 +9,8 @@ on:
     branches: [main]
 
 env:
-  rack-sdk-version: 2.6.6
-  rack-plugin-toolchain-dir: /home/build/rack-plugin-toolchain
+  RACK_SDK_VERSION: 2.6.6
+  RACK_PLUGIN_TOOLCHAIN_DIR: /home/build/rack-plugin-toolchain
 
 defaults:
   run:
@@ -73,15 +73,15 @@ jobs:
       - name: Build plugin (${{ matrix.platform }})
         run: |
           export PLUGIN_DIR=$GITHUB_WORKSPACE
-          export RACK_SDK_VERSION=${{ env.rack-sdk-version }}
-          pushd ${{ env.rack-plugin-toolchain-dir }}
+          export RACK_SDK_VERSION=${{ env.RACK_SDK_VERSION }}
+          pushd ${{ env.RACK_PLUGIN_TOOLCHAIN_DIR }}
           make plugin-build-${{ matrix.platform }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.platform }}
-          path: ${{ env.rack-plugin-toolchain-dir }}/plugin-build
+          path: ${{ env.RACK_PLUGIN_TOOLCHAIN_DIR }}/plugin-build
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Job 3 — Build for macOS x64 and ARM64 (native runners)
@@ -96,10 +96,8 @@ jobs:
         include:
           # From Rack 2.6.0, Mac SDKs are separate per-arch zips (no combined zip)
           - platform: x64
-            sdk_zip: Rack-SDK-${{ env.rack-sdk-version }}-mac-x64.zip
             cross_compile: x86_64-apple-darwin
           - platform: arm64
-            sdk_zip: Rack-SDK-${{ env.rack-sdk-version }}-mac-arm64.zip
             cross_compile: arm64-apple-darwin
     steps:
       - uses: actions/checkout@v4
@@ -116,7 +114,7 @@ jobs:
         run: |
           cd $HOME
           wget -O Rack-SDK.zip \
-            "https://vcvrack.com/downloads/${{ matrix.sdk_zip }}"
+            "https://vcvrack.com/downloads/Rack-SDK-${{ env.RACK_SDK_VERSION }}-mac-${{ matrix.platform }}.zip"
           unzip -q Rack-SDK.zip
 
       - name: Download cpp-httplib dependency
