@@ -1,7 +1,7 @@
 {
   "slug": "VCVRackMcpServer",
   "name": "MCP Server",
-  "version": "2.1.0",
+  "version": "@PROJECT_VERSION@",
   "license": "MIT",
   "brand": "Neural Harmonics",
   "author": "Claudio Bisegni",

@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
-project(VCVRackMcpServer VERSION 2.0.0 LANGUAGES CXX)
+project(VCVRackMcpServer VERSION 2.1.0 LANGUAGES CXX)
+# NOTE: The major version MUST be 2 — VCV Rack 2 rejects plugins whose
+# version does not start with "2." (ABI compatibility check).
+# Use minor.patch for your own versioning: 2.<minor>.<patch>
 
 # =============================================================================
 # vcv-rack-mcp-server — VCV Rack 2 Plugin  (CMake build)
@@ -90,6 +93,13 @@ if(NOT DEFINED RACK_DIR)
 endif()
 
 message(STATUS "Using Rack SDK at: ${RACK_DIR}")
+
+# ── Generate plugin.json from template (single source of truth: PROJECT_VERSION) ─
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/plugin.json.in
+  ${CMAKE_CURRENT_BINARY_DIR}/plugin.json
+  @ONLY
+)
 
 # ── Dependency auto-download: cpp-httplib (header-only, MIT) ─────────────────
 set(HTTPLIB_VERSION_FILE ${CMAKE_CURRENT_SOURCE_DIR}/deps/httplib.version)
@@ -198,7 +208,7 @@ set(PLUGIN_INSTALL_DIR ${RACK_PLUGINS_DIR}/VCVRackMcpServer)
 install(TARGETS VCVRackMcpServer
   LIBRARY DESTINATION ${PLUGIN_INSTALL_DIR}
 )
-install(FILES plugin.json
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/plugin.json
   DESTINATION ${PLUGIN_INSTALL_DIR}
 )
 install(DIRECTORY res/

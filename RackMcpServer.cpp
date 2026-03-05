@@ -252,6 +252,111 @@ static double parseJsonDouble(const std::string& json, const std::string& key, d
     try { return std::stod(json.substr(pos)); } catch (...) { return def; }
 }
 
+// Extract raw JSON value (string, number, object, array, bool, null) by key
+static std::string parseRawValue(const std::string& json, const std::string& key) {
+    std::string sk = "\"" + key + "\"";
+    auto p = json.find(sk);
+    if (p == std::string::npos) return "";
+    p += sk.size();
+    while (p < json.size() && (json[p] == ' ' || json[p] == ':' || json[p] == '\t' || json[p] == '\n')) p++;
+    if (p >= json.size()) return "";
+    char c = json[p];
+    if (c == '"') {
+        auto e = p + 1;
+        while (e < json.size()) {
+            if (json[e] == '\\') { e += 2; continue; }
+            if (json[e] == '"') break;
+            e++;
+        }
+        return json.substr(p, e - p + 1);
+    } else if (c == '{' || c == '[') {
+        char open = c, close = (c == '{') ? '}' : ']';
+        int depth = 0;
+        auto start = p;
+        bool inStr = false;
+        for (; p < json.size(); p++) {
+            char ch = json[p];
+            if (ch == '\\') { p++; continue; }
+            if (ch == '"') { inStr = !inStr; continue; }
+            if (inStr) continue;
+            if (ch == open) depth++;
+            else if (ch == close && --depth == 0) return json.substr(start, p - start + 1);
+        }
+        return "";
+    } else {
+        auto e = p;
+        while (e < json.size() && json[e] != ',' && json[e] != '}' && json[e] != ']'
+               && json[e] != ' ' && json[e] != '\n' && json[e] != '\r') e++;
+        return json.substr(p, e - p);
+    }
+}
+
+// Extract the JSON-RPC "id" field as raw JSON (preserves number/string/null type)
+static std::string parseJsonRpcId(const std::string& body) {
+    std::string key = "\"id\"";
+    auto pos = body.find(key);
+    if (pos == std::string::npos) return "null";
+    pos += key.size();
+    while (pos < body.size() && (body[pos] == ' ' || body[pos] == ':' || body[pos] == '\t')) pos++;
+    if (pos >= body.size()) return "null";
+    char c = body[pos];
+    if (c == '"') {
+        auto end = pos + 1;
+        while (end < body.size()) {
+            if (body[end] == '\\') { end += 2; continue; }
+            if (body[end] == '"') break;
+            end++;
+        }
+        return body.substr(pos, end - pos + 1);
+    } else if (c == 'n') {
+        return "null";
+    } else {
+        auto end = pos;
+        while (end < body.size() && body[end] != ',' && body[end] != '}'
+               && body[end] != ' ' && body[end] != '\r' && body[end] != '\n') end++;
+        return body.substr(pos, end - pos);
+    }
+}
+
+// ─── JSON-RPC 2.0 / MCP response builders ─────────────────────────────────
+
+static std::string mcpOk(const std::string& id, const std::string& result) {
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + result + "}";
+}
+
+static std::string mcpErr(const std::string& id, int code, const std::string& msg) {
+    return "{\"jsonrpc\":\"2.0\",\"id\":" + id +
+           ",\"error\":{\"code\":" + std::to_string(code) + ",\"message\":" + jsonStr(msg) + "}}";
+}
+
+static std::string toolOk(const std::string& text) {
+    return "{\"content\":[{\"type\":\"text\",\"text\":" + jsonStr(text) + "}],\"isError\":false}";
+}
+
+static std::string toolFail(const std::string& text) {
+    return "{\"content\":[{\"type\":\"text\",\"text\":" + jsonStr(text) + "}],\"isError\":true}";
+}
+
+// ─── MCP tools list (JSON Schema for each tool) ────────────────────────────
+
+static const char* MCP_TOOLS_JSON = R"json([
+{"name":"vcvrack_get_status","description":"Get VCV Rack server status: version, sample rate, and loaded module count.","inputSchema":{"type":"object","properties":{}}},
+{"name":"vcvrack_list_modules","description":"List all modules currently loaded in the VCV Rack patch with their IDs, slugs, and port counts.","inputSchema":{"type":"object","properties":{}}},
+{"name":"vcvrack_get_module","description":"Get detailed information about a specific module: all parameters (with value ranges), inputs, and outputs.","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Module ID"}},"required":["id"]}},
+{"name":"vcvrack_add_module","description":"Add a new module to the VCV Rack patch. Use vcvrack_search_library to discover valid plugin/slug values.","inputSchema":{"type":"object","properties":{"plugin":{"type":"string","description":"Plugin slug (e.g. 'Fundamental')"},"slug":{"type":"string","description":"Module slug (e.g. 'VCO-1')"},"x":{"type":"number","description":"X position in pixels (optional, auto-placed after rightmost module if omitted)"},"y":{"type":"number","description":"Y position in pixels (optional)"}},"required":["plugin","slug"]}},
+{"name":"vcvrack_delete_module","description":"Delete a module from the VCV Rack patch by ID.","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Module ID to delete"}},"required":["id"]}},
+{"name":"vcvrack_get_params","description":"Get all parameters of a module with names, value ranges, and current values.","inputSchema":{"type":"object","properties":{"moduleId":{"type":"integer","description":"Module ID"}},"required":["moduleId"]}},
+{"name":"vcvrack_set_params","description":"Set one or more parameters on a module. Call vcvrack_get_params first to discover parameter IDs and valid value ranges.","inputSchema":{"type":"object","properties":{"moduleId":{"type":"integer","description":"Module ID"},"params":{"type":"array","description":"Array of parameter updates","items":{"type":"object","properties":{"id":{"type":"integer","description":"Parameter index (0-based)"},"value":{"type":"number","description":"New parameter value"}},"required":["id","value"]}}},"required":["moduleId","params"]}},
+{"name":"vcvrack_list_cables","description":"List all cable connections in the current patch.","inputSchema":{"type":"object","properties":{}}},
+{"name":"vcvrack_add_cable","description":"Connect an output port to an input port with a patch cable.","inputSchema":{"type":"object","properties":{"outputModuleId":{"type":"integer","description":"Source module ID"},"outputId":{"type":"integer","description":"Output port index (0-based)"},"inputModuleId":{"type":"integer","description":"Destination module ID"},"inputId":{"type":"integer","description":"Input port index (0-based)"}},"required":["outputModuleId","outputId","inputModuleId","inputId"]}},
+{"name":"vcvrack_delete_cable","description":"Remove a cable connection by cable ID.","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Cable ID"}},"required":["id"]}},
+{"name":"vcvrack_get_sample_rate","description":"Get the current audio engine sample rate in Hz.","inputSchema":{"type":"object","properties":{}}},
+{"name":"vcvrack_search_library","description":"Search the installed plugin library for modules by name, slug, or tag. Use this to discover plugin slugs and module slugs before calling vcvrack_add_module.","inputSchema":{"type":"object","properties":{"q":{"type":"string","description":"Search query matching slug, name, or description"},"tags":{"type":"string","description":"Tag filter e.g. 'VCO', 'VCF', 'LFO', 'Envelope', 'Mixer'"}},"required":[]}},
+{"name":"vcvrack_get_plugin","description":"Get detailed information about an installed plugin and its full module list.","inputSchema":{"type":"object","properties":{"slug":{"type":"string","description":"Plugin slug"}},"required":["slug"]}},
+{"name":"vcvrack_save_patch","description":"Save the current VCV Rack patch to a .vcv file.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute file path (e.g. '/home/user/patches/my_patch.vcv')"}},"required":["path"]}},
+{"name":"vcvrack_load_patch","description":"Load a VCV Rack patch from a .vcv file, replacing the current patch.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute file path to load"}},"required":["path"]}}
+])json";
+
 // ─── Module Definition ─────────────────────────────────────────────────────
 
 struct RackMcpServer : Module {
@@ -312,6 +417,330 @@ public:
 
     RackHttpServer() : port(2600) {}
     ~RackHttpServer() { stop(); }
+
+    // ─── MCP tool dispatcher ────────────────────────────────────────────────
+
+    std::string dispatchTool(const std::string& name, const std::string& args) {
+        auto* rackApp = APP;
+
+        if (name == "vcvrack_get_status") {
+            float sr = 0.f; int count = 0;
+            taskQueue->post([rackApp, &sr, &count]() {
+                sr = rackApp->engine->getSampleRate();
+                count = (int)rackApp->engine->getModuleIds().size();
+            }).get();
+            return toolOk("{\"server\":\"VCV Rack MCP Bridge\",\"version\":\"1.3.0\","
+                          "\"sampleRate\":" + std::to_string(sr) +
+                          ",\"moduleCount\":" + std::to_string(count) + "}");
+        }
+
+        if (name == "vcvrack_list_modules") {
+            std::string body;
+            taskQueue->post([rackApp, &body]() {
+                std::vector<int64_t> ids = rackApp->engine->getModuleIds();
+                body = "[";
+                for (size_t i = 0; i < ids.size(); i++) {
+                    engine::Module* mod = rackApp->engine->getModule(ids[i]);
+                    body += (mod ? serializeModuleSummary(mod) : "null");
+                    if (i < ids.size() - 1) body += ",";
+                }
+                body += "]";
+            }).get();
+            return toolOk(body);
+        }
+
+        if (name == "vcvrack_get_module") {
+            std::string rawId = parseRawValue(args, "id");
+            int64_t id = rawId.empty() ? -1 : (int64_t)std::stod(rawId);
+            std::string body;
+            taskQueue->post([rackApp, id, &body]() {
+                engine::Module* mod = rackApp->engine->getModule(id);
+                body = mod ? serializeModuleDetail(mod) : "";
+            }).get();
+            if (body.empty()) return toolFail("Module not found: " + std::to_string(id));
+            return toolOk(body);
+        }
+
+        if (name == "vcvrack_add_module") {
+            std::string pSlug = parseJsonString(args, "plugin");
+            std::string mSlug = parseJsonString(args, "slug");
+            float x = (float)parseJsonDouble(args, "x", -1.0);
+            float y = (float)parseJsonDouble(args, "y", 0.0);
+            plugin::Model* model = nullptr;
+            for (plugin::Plugin* p : rack::plugin::plugins)
+                if (p->slug == pSlug)
+                    for (plugin::Model* m : p->models)
+                        if (m->slug == mSlug) { model = m; break; }
+            if (!model) return toolFail("Model not found: " + pSlug + "/" + mSlug);
+            int64_t moduleId = -1;
+            taskQueue->post([rackApp, model, x, y, &moduleId]() mutable {
+                engine::Module* m = model->createModule();
+                if (!m) return;
+                rackApp->engine->addModule(m);
+                moduleId = m->id;
+                app::ModuleWidget* mw = model->createModuleWidget(m);
+                if (!mw) return;
+                rackApp->scene->rack->addModule(mw);
+                float px = x, py = y;
+                if (px < 0.f) {
+                    px = 0.f; bool found = false;
+                    for (app::ModuleWidget* w : rackApp->scene->rack->getModules()) {
+                        float r = w->box.pos.x + w->box.size.x;
+                        if (!found || r > px) { px = r; py = w->box.pos.y; found = true; }
+                    }
+                }
+                rackApp->scene->rack->setModulePosForce(mw, math::Vec(px, py));
+            }).get();
+            if (moduleId < 0) return toolFail("Failed to create module");
+            return toolOk("{\"id\":" + std::to_string(moduleId) +
+                          ",\"plugin\":" + jsonStr(pSlug) +
+                          ",\"slug\":" + jsonStr(mSlug) + "}");
+        }
+
+        if (name == "vcvrack_delete_module") {
+            int64_t id = (int64_t)parseJsonDouble(args, "id", -1);
+            if (parent && parent->id == id)
+                return toolFail("Cannot delete the MCP server module itself");
+            if (parent) {
+                std::lock_guard<std::mutex> lock(parent->pendingDeleteMutex);
+                parent->pendingDeleteIds.push_back((uint64_t)id);
+            }
+            return toolOk("{\"queued\":true,\"id\":" + std::to_string(id) + "}");
+        }
+
+        if (name == "vcvrack_get_params") {
+            int64_t id = (int64_t)parseJsonDouble(args, "moduleId", -1);
+            std::string body;
+            taskQueue->post([rackApp, id, &body]() {
+                engine::Module* mod = rackApp->engine->getModule(id);
+                if (!mod) return;
+                body = "[";
+                for (int i = 0; i < (int)mod->params.size(); i++) {
+                    body += serializeParamQuantity(mod->paramQuantities[i], i);
+                    if (i < (int)mod->params.size() - 1) body += ",";
+                }
+                body += "]";
+            }).get();
+            if (body.empty()) return toolFail("Module not found: " + std::to_string(id));
+            return toolOk(body);
+        }
+
+        if (name == "vcvrack_set_params") {
+            int64_t id = (int64_t)parseJsonDouble(args, "moduleId", -1);
+            std::string paramsRaw = parseRawValue(args, "params");
+            int applied = 0; bool found = false;
+            taskQueue->post([rackApp, id, paramsRaw, &applied, &found]() {
+                engine::Module* mod = rackApp->engine->getModule(id);
+                if (!mod) return;
+                found = true;
+                size_t pos = 0;
+                while (pos < paramsRaw.size()) {
+                    size_t start = paramsRaw.find('{', pos);
+                    if (start == std::string::npos) break;
+                    size_t end = paramsRaw.find('}', start);
+                    if (end == std::string::npos) break;
+                    std::string obj = paramsRaw.substr(start, end - start + 1);
+                    int paramId = (int)parseJsonDouble(obj, "id", -1);
+                    double value = parseJsonDouble(obj, "value", 0.0);
+                    if (paramId >= 0 && paramId < (int)mod->params.size()) {
+                        rackApp->engine->setParamValue(mod, paramId, (float)value);
+                        applied++;
+                    }
+                    pos = end + 1;
+                }
+            }).get();
+            if (!found) return toolFail("Module not found: " + std::to_string(id));
+            return toolOk("{\"applied\":" + std::to_string(applied) + "}");
+        }
+
+        if (name == "vcvrack_list_cables") {
+            std::string body;
+            taskQueue->post([rackApp, &body]() {
+                std::vector<int64_t> ids = rackApp->engine->getCableIds();
+                body = "[";
+                for (size_t i = 0; i < ids.size(); i++) {
+                    engine::Cable* c = rackApp->engine->getCable(ids[i]);
+                    if (c) {
+                        body += "{\"id\":" + std::to_string(c->id) +
+                                ",\"outputModuleId\":" + std::to_string(c->outputModule->id) +
+                                ",\"outputId\":" + std::to_string(c->outputId) +
+                                ",\"inputModuleId\":" + std::to_string(c->inputModule->id) +
+                                ",\"inputId\":" + std::to_string(c->inputId) + "}";
+                    } else { body += "null"; }
+                    if (i < ids.size() - 1) body += ",";
+                }
+                body += "]";
+            }).get();
+            return toolOk(body);
+        }
+
+        if (name == "vcvrack_add_cable") {
+            int64_t outM = (int64_t)parseJsonDouble(args, "outputModuleId", -1);
+            int64_t inM  = (int64_t)parseJsonDouble(args, "inputModuleId", -1);
+            int outP = (int)parseJsonDouble(args, "outputId", 0);
+            int inP  = (int)parseJsonDouble(args, "inputId", 0);
+            int64_t cableId = -1;
+            taskQueue->post([rackApp, outM, outP, inM, inP, &cableId]() {
+                engine::Module* oMod = rackApp->engine->getModule(outM);
+                engine::Module* iMod = rackApp->engine->getModule(inM);
+                if (!oMod || !iMod) return;
+                app::ModuleWidget* oWidget = rackApp->scene->rack->getModule(outM);
+                app::ModuleWidget* iWidget = rackApp->scene->rack->getModule(inM);
+                if (!oWidget || !iWidget) return;
+                app::PortWidget* oPort = oWidget->getOutput(outP);
+                app::PortWidget* iPort = iWidget->getInput(inP);
+                if (!oPort || !iPort) return;
+                engine::Cable* c = new engine::Cable;
+                c->outputModule = oMod; c->outputId = outP;
+                c->inputModule = iMod;  c->inputId = inP;
+                rackApp->engine->addCable(c);
+                cableId = c->id;
+                app::CableWidget* cw = new app::CableWidget;
+                cw->color = rackApp->scene->rack->getNextCableColor();
+                cw->setCable(c);
+                cw->outputPort = oPort;
+                cw->inputPort = iPort;
+                rackApp->scene->rack->addCable(cw);
+            }).get();
+            if (cableId < 0) return toolFail("Failed to connect: ports or modules not found");
+            return toolOk("{\"id\":" + std::to_string(cableId) + "}");
+        }
+
+        if (name == "vcvrack_delete_cable") {
+            int64_t id = (int64_t)parseJsonDouble(args, "id", -1);
+            bool found = false;
+            taskQueue->post([rackApp, id, &found]() {
+                app::CableWidget* cw = rackApp->scene->rack->getCable(id);
+                if (cw) {
+                    found = true;
+                    rackApp->scene->rack->removeCable(cw);
+                    delete cw;
+                } else {
+                    engine::Cable* c = rackApp->engine->getCable(id);
+                    if (c) { found = true; rackApp->engine->removeCable(c); delete c; }
+                }
+            }).get();
+            if (!found) return toolFail("Cable not found: " + std::to_string(id));
+            return toolOk("{\"removed\":true}");
+        }
+
+        if (name == "vcvrack_get_sample_rate") {
+            float sr = 0.f;
+            taskQueue->post([rackApp, &sr]() { sr = rackApp->engine->getSampleRate(); }).get();
+            return toolOk("{\"sampleRate\":" + std::to_string(sr) + "}");
+        }
+
+        if (name == "vcvrack_search_library") {
+            std::string tagFilter = parseJsonString(args, "tags");
+            std::string query = parseJsonString(args, "q");
+            std::string queryLow = query;
+            std::transform(queryLow.begin(), queryLow.end(), queryLow.begin(), ::tolower);
+            std::string body = "[";
+            bool firstPlugin = true;
+            for (plugin::Plugin* plug : rack::plugin::plugins) {
+                std::vector<plugin::Model*> filtered;
+                for (plugin::Model* m : plug->models) {
+                    if (!tagFilter.empty()) {
+                        bool hasTag = false;
+                        for (int t : m->tagIds) {
+                            std::string tn = rack::tag::getTag(t);
+                            std::transform(tn.begin(), tn.end(), tn.begin(), ::tolower);
+                            if (tagFilter.find(tn) != std::string::npos) { hasTag = true; break; }
+                        }
+                        if (!hasTag) continue;
+                    }
+                    if (!queryLow.empty()) {
+                        std::string s = m->slug + " " + m->name + " " + m->description;
+                        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+                        if (s.find(queryLow) == std::string::npos) continue;
+                    }
+                    filtered.push_back(m);
+                }
+                if (filtered.empty()) continue;
+                if (!firstPlugin) body += ","; firstPlugin = false;
+                body += "{\"slug\":" + jsonStr(plug->slug) + ",\"name\":" + jsonStr(plug->name) + ",\"modules\":[";
+                for (size_t i = 0; i < filtered.size(); i++) {
+                    body += serializeModel(filtered[i]);
+                    if (i < filtered.size() - 1) body += ",";
+                }
+                body += "]}";
+            }
+            body += "]";
+            return toolOk(body);
+        }
+
+        if (name == "vcvrack_get_plugin") {
+            std::string slug = parseJsonString(args, "slug");
+            for (plugin::Plugin* p : rack::plugin::plugins)
+                if (p->slug == slug) return toolOk(serializePlugin(p));
+            return toolFail("Plugin not found: " + slug);
+        }
+
+        if (name == "vcvrack_save_patch") {
+            std::string path = parseJsonString(args, "path");
+            if (path.empty()) return toolFail("Missing 'path'");
+            taskQueue->post([rackApp, path]() { rackApp->patch->save(path); }).get();
+            return toolOk("{\"saved\":" + jsonStr(path) + "}");
+        }
+
+        if (name == "vcvrack_load_patch") {
+            std::string path = parseJsonString(args, "path");
+            if (path.empty()) return toolFail("Missing 'path'");
+            taskQueue->post([rackApp, path]() { rackApp->patch->load(path); }).get();
+            return toolOk("{\"loaded\":" + jsonStr(path) + "}");
+        }
+
+        return toolFail("Unknown tool: " + name);
+    }
+
+    // ─── MCP Streamable HTTP request handler ────────────────────────────────
+
+    void handleMcpPost(const httplib::Request& req, httplib::Response& res) {
+        const std::string& body = req.body;
+        std::string id     = parseJsonRpcId(body);
+        std::string method = parseJsonString(body, "method");
+
+        // Notifications require no response
+        if (method.rfind("notifications/", 0) == 0) {
+            res.status = 202;
+            res.set_content("", "application/json");
+            return;
+        }
+
+        if (method == "initialize") {
+            res.set_content(mcpOk(id, R"({"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"VCV Rack MCP Bridge","version":"1.3.0"}})"), "application/json");
+            return;
+        }
+
+        if (method == "ping") {
+            res.set_content(mcpOk(id, "{}"), "application/json");
+            return;
+        }
+
+        if (method == "tools/list") {
+            res.set_content(mcpOk(id, "{\"tools\":" + std::string(MCP_TOOLS_JSON) + "}"), "application/json");
+            return;
+        }
+
+        if (method == "tools/call") {
+            std::string params   = parseRawValue(body, "params");
+            if (params.empty()) {
+                res.set_content(mcpErr(id, -32602, "Missing params"), "application/json");
+                return;
+            }
+            std::string toolName = parseJsonString(params, "name");
+            std::string toolArgs = parseRawValue(params, "arguments");
+            if (toolArgs.empty()) toolArgs = "{}";
+            try {
+                res.set_content(mcpOk(id, dispatchTool(toolName, toolArgs)), "application/json");
+            } catch (const std::exception& e) {
+                res.set_content(mcpOk(id, toolFail(std::string("Internal error: ") + e.what())), "application/json");
+            }
+            return;
+        }
+
+        res.set_content(mcpErr(id, -32601, "Method not found: " + method), "application/json");
+    }
 
     void setupRoutes() {
         auto* rackApp = APP;
@@ -579,6 +1008,21 @@ public:
             if (path.empty()) { res.status = 400; res.set_content(err("Missing path"), "application/json"); return; }
             taskQueue->post([rackApp, path]() { rackApp->patch->load(path); }).get();
             res.set_content(ok("{\"loaded\":" + jsonStr(path) + "}"), "application/json");
+        });
+
+        // ── MCP Streamable HTTP transport (protocol version 2024-11-05) ─────
+        // POST /mcp  – JSON-RPC 2.0 requests (initialize / tools/list / tools/call)
+        svr.Post("/mcp", [this](const httplib::Request& req, httplib::Response& res) {
+            handleMcpPost(req, res);
+        });
+
+        // GET /mcp  – SSE stream for server-sent notifications
+        svr.Get("/mcp", [](const httplib::Request&, httplib::Response& res) {
+            res.set_header("Content-Type", "text/event-stream");
+            res.set_header("Cache-Control", "no-cache");
+            res.set_header("Connection", "keep-alive");
+            res.body   = ": VCV Rack MCP Bridge\n\n";
+            res.status = 200;
         });
     }
 
