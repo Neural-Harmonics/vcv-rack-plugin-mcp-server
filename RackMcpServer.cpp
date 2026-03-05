@@ -103,18 +103,37 @@ static std::string serializeParamQuantity(ParamQuantity* pq, int paramId) {
     s += jsonKV("min", std::to_string(pq->minValue));
     s += jsonKV("max", std::to_string(pq->maxValue));
     s += jsonKV("default", std::to_string(pq->defaultValue));
-    s += jsonKV("value", std::to_string(pq->getValue()), true);
+    s += jsonKV("value", std::to_string(pq->getValue()));
+    s += jsonKVs("displayValue", pq->getDisplayValueString());
+    
+    // Check if it's a switch with labels
+    SwitchQuantity* sq = dynamic_cast<SwitchQuantity*>(pq);
+    if (sq && !sq->labels.empty()) {
+        s += jsonStr("options") + ": [";
+        for (size_t i = 0; i < sq->labels.size(); i++) {
+            s += jsonStr(sq->labels[i]) + (i < sq->labels.size() - 1 ? ", " : "");
+        }
+        s += "], ";
+    }
+    
+    s += jsonKV("snap", pq->snapEnabled ? "true" : "false", true);
     s += "}";
     return s;
 }
 
-static std::string serializePortInfo(PortInfo* pi, int portId, bool isInput) {
-    if (!pi) return "{}";
+static std::string serializePortInfo(engine::Port* port, PortInfo* pi, int portId, bool isInput) {
     std::string s = "{";
     s += jsonKV("id", std::to_string(portId));
-    s += jsonKVs("name", pi->name);
-    s += jsonKVs("description", pi->description);
-    s += jsonKVs("type", isInput ? "input" : "output", true);
+    s += jsonKVs("name", pi ? pi->name : "");
+    s += jsonKVs("description", pi ? pi->description : "");
+    s += jsonKVs("type", isInput ? "input" : "output");
+    if (port) {
+        s += jsonKV("connected", port->isConnected() ? "true" : "false");
+        s += jsonKV("channels", std::to_string((int)port->getChannels()));
+        s += jsonKV("voltage", std::to_string(port->getVoltage()), true);
+    } else {
+        s += jsonKV("connected", "false", true);
+    }
     s += "}";
     return s;
 }
@@ -140,12 +159,12 @@ static std::string serializeModuleDetail(engine::Module* mod) {
     }
     s += "], " + jsonStr("inputs") + ": [";
     for (int i = 0; i < (int)mod->inputs.size(); i++) {
-        s += serializePortInfo(i < (int)mod->inputInfos.size() ? mod->inputInfos[i] : nullptr, i, true);
+        s += serializePortInfo(&mod->inputs[i], i < (int)mod->inputInfos.size() ? mod->inputInfos[i] : nullptr, i, true);
         if (i < (int)mod->inputs.size() - 1) s += ", ";
     }
     s += "], " + jsonStr("outputs") + ": [";
     for (int i = 0; i < (int)mod->outputs.size(); i++) {
-        s += serializePortInfo(i < (int)mod->outputInfos.size() ? mod->outputInfos[i] : nullptr, i, false);
+        s += serializePortInfo(&mod->outputs[i], i < (int)mod->outputInfos.size() ? mod->outputInfos[i] : nullptr, i, false);
         if (i < (int)mod->outputs.size() - 1) s += ", ";
     }
     s += "]}";
@@ -331,7 +350,7 @@ public:
             res.set_content(ok(body), "application/json");
         });
 
-        svr.Get(R"(/modules/(\d+))", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get(R"(/modules/(\d+)$)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
             int64_t id = std::stoll(req.matches[1]);
             std::string body;
             taskQueue->post([rackApp, id, &body]() {
@@ -368,23 +387,198 @@ public:
             else res.set_content(ok("{" + jsonKV("id", std::to_string(moduleId)) + jsonKVs("plugin", pSlug) + jsonKVs("slug", mSlug, true) + "}"), "application/json");
         });
 
-        svr.Delete(R"(/modules/(\d+))", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Delete(R"(/modules/(\d+)$)", [this](const httplib::Request& req, httplib::Response& res) {
             int64_t id = std::stoll(req.matches[1]);
-            if (parent && parent->id == (uint64_t)id) { res.status = 403; res.set_content(err("Cannot delete server module"), "application/json"); return; }
+            if (parent && parent->id == id) { res.status = 403; res.set_content(err("Cannot delete server module"), "application/json"); return; }
             if (parent) { std::lock_guard<std::mutex> lock(parent->pendingDeleteMutex); parent->pendingDeleteIds.push_back((uint64_t)id); }
             res.set_content(ok("{\"status\":\"queued\",\"id\":" + std::to_string(id) + "}"), "application/json");
+        });
+
+        svr.Get(R"(/modules/(\d+)/params)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            int64_t id = std::stoll(req.matches[1]);
+            std::string body;
+            taskQueue->post([rackApp, id, &body]() {
+                engine::Module* mod = rackApp->engine->getModule(id);
+                if (!mod) { body = "null"; return; }
+                body = "[";
+                for (int i = 0; i < (int)mod->params.size(); i++) {
+                    body += serializeParamQuantity(mod->paramQuantities[i], i) + (i < (int)mod->params.size() - 1 ? ", " : "");
+                }
+                body += "]";
+            }).get();
+            if (body == "null") { res.status = 404; res.set_content(err("Module not found"), "application/json"); }
+            else res.set_content(ok(body), "application/json");
+        });
+
+        svr.Post(R"(/modules/(\d+)/params)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            int64_t id = std::stoll(req.matches[1]);
+            const std::string requestBody = req.body;
+            int applied = 0; bool found = false;
+            taskQueue->post([rackApp, id, requestBody, &applied, &found]() {
+                engine::Module* mod = rackApp->engine->getModule(id);
+                if (!mod) return;
+                found = true;
+                size_t pos = 0;
+                while (pos < requestBody.size()) {
+                    size_t start = requestBody.find('{', pos); if (start == std::string::npos) break;
+                    size_t end = requestBody.find('}', start); if (end == std::string::npos) break;
+                    std::string obj = requestBody.substr(start, end - start + 1);
+                    int paramId = (int)parseJsonDouble(obj, "id", -1);
+                    double value = parseJsonDouble(obj, "value", 0.0);
+                    if (paramId >= 0 && paramId < (int)mod->params.size()) { rackApp->engine->setParamValue(mod, paramId, (float)value); applied++; }
+                    pos = end + 1;
+                }
+            }).get();
+            if (!found) { res.status = 404; res.set_content(err("Module not found"), "application/json"); }
+            else res.set_content(ok("{\"applied\":" + std::to_string(applied) + "}"), "application/json");
+        });
+
+        svr.Get("/cables", [rackApp, this](const httplib::Request&, httplib::Response& res) {
+            std::string body;
+            taskQueue->post([rackApp, &body]() {
+                std::vector<int64_t> ids = rackApp->engine->getCableIds();
+                body = "[";
+                for (size_t i = 0; i < ids.size(); i++) {
+                    engine::Cable* c = rackApp->engine->getCable(ids[i]);
+                    if (c) {
+                        body += "{\"id\":" + std::to_string(c->id) + ", \"outputModuleId\":" + std::to_string(c->outputModule->id) + 
+                                ", \"outputId\":" + std::to_string(c->outputId) + ", \"inputModuleId\":" + std::to_string(c->inputModule->id) + 
+                                ", \"inputId\":" + std::to_string(c->inputId) + "}";
+                    } else { body += "null"; }
+                    if (i < ids.size() - 1) body += ", ";
+                }
+                body += "]";
+            }).get();
+            res.set_content(ok(body), "application/json");
         });
 
         svr.Post("/cables", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
             int64_t outM = (int64_t)parseJsonDouble(req.body, "outputModuleId", -1), inM = (int64_t)parseJsonDouble(req.body, "inputModuleId", -1);
             int outP = (int)parseJsonDouble(req.body, "outputId", 0), inP = (int)parseJsonDouble(req.body, "inputId", 0);
             int64_t cableId = -1;
+            
             taskQueue->post([rackApp, outM, outP, inM, inP, &cableId]() {
-                engine::Module *o = rackApp->engine->getModule(outM), *i = rackApp->engine->getModule(inM);
-                if (o && i) { engine::Cable* c = new engine::Cable; c->outputModule = o; c->outputId = outP; c->inputModule = i; c->inputId = inP; rackApp->engine->addCable(c); cableId = c->id; }
+                engine::Module* oMod = rackApp->engine->getModule(outM);
+                engine::Module* iMod = rackApp->engine->getModule(inM);
+                if (!oMod || !iMod) return;
+
+                app::ModuleWidget* oWidget = rackApp->scene->rack->getModule(outM);
+                app::ModuleWidget* iWidget = rackApp->scene->rack->getModule(inM);
+                if (!oWidget || !iWidget) return;
+
+                app::PortWidget* oPort = oWidget->getOutput(outP);
+                app::PortWidget* iPort = iWidget->getInput(inP);
+                if (!oPort || !iPort) return;
+
+                // 1. Create engine cable
+                engine::Cable* c = new engine::Cable;
+                c->outputModule = oMod;
+                c->outputId = outP;
+                c->inputModule = iMod;
+                c->inputId = inP;
+                rackApp->engine->addCable(c);
+                cableId = c->id;
+
+                // 2. Create UI cable widget
+                app::CableWidget* cw = new app::CableWidget;
+                cw->color = rackApp->scene->rack->getNextCableColor();
+                cw->setCable(c);
+                cw->outputPort = oPort;
+                cw->inputPort = iPort;
+                rackApp->scene->rack->addCable(cw);
             }).get();
-            if (cableId < 0) { res.status = 404; res.set_content(err("Failed to connect"), "application/json"); }
+
+            if (cableId < 0) { res.status = 404; res.set_content(err("Failed to connect: ports or modules not found"), "application/json"); }
             else res.set_content(ok("{\"id\":" + std::to_string(cableId) + "}"), "application/json");
+        });
+
+        svr.Delete(R"(/cables/(\d+))", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            int64_t id = std::stoll(req.matches[1]);
+            bool found = false;
+            
+            taskQueue->post([rackApp, id, &found]() {
+                app::CableWidget* cw = rackApp->scene->rack->getCable(id);
+                if (cw) {
+                    found = true;
+                    rackApp->scene->rack->removeCable(cw);
+                    delete cw;
+                } else {
+                    // Fallback: if no widget, try removing from engine
+                    engine::Cable* c = rackApp->engine->getCable(id);
+                    if (c) {
+                        found = true;
+                        rackApp->engine->removeCable(c);
+                        delete c;
+                    }
+                }
+            }).get();
+
+            if (!found) { res.status = 404; res.set_content(err("Cable not found"), "application/json"); }
+            else res.set_content(ok("{\"removed\":true}"), "application/json");
+        });
+
+        svr.Get("/sample-rate", [rackApp, this](const httplib::Request&, httplib::Response& res) {
+            float sr = 0.f;
+            taskQueue->post([rackApp, &sr]() { sr = rackApp->engine->getSampleRate(); }).get();
+            res.set_content(ok("{\"sampleRate\":" + std::to_string(sr) + "}"), "application/json");
+        });
+
+        svr.Get("/library", [](const httplib::Request& req, httplib::Response& res) {
+            std::string tagFilter = req.has_param("tags") ? req.get_param_value("tags") : "";
+            std::string query = req.has_param("q") ? req.get_param_value("q") : "";
+            std::string queryLow = query; std::transform(queryLow.begin(), queryLow.end(), queryLow.begin(), ::tolower);
+
+            std::string body = "[";
+            bool firstPlugin = true;
+            for (plugin::Plugin* plug : rack::plugin::plugins) {
+                std::vector<plugin::Model*> filtered;
+                for (plugin::Model* m : plug->models) {
+                    if (!tagFilter.empty()) {
+                        bool hasTag = false;
+                        for (int t : m->tagIds) {
+                            std::string tn = rack::tag::getTag(t); std::transform(tn.begin(), tn.end(), tn.begin(), ::tolower);
+                            if (tagFilter.find(tn) != std::string::npos) { hasTag = true; break; }
+                        }
+                        if (!hasTag) continue;
+                    }
+                    if (!queryLow.empty()) {
+                        std::string s = m->slug + " " + m->name + " " + m->description; std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+                        if (s.find(queryLow) == std::string::npos) continue;
+                    }
+                    filtered.push_back(m);
+                }
+                if (filtered.empty()) continue;
+                if (!firstPlugin) body += ", "; firstPlugin = false;
+                body += "{\"slug\":" + jsonStr(plug->slug) + ", \"name\":" + jsonStr(plug->name) + ", \"modules\": [";
+                for (size_t i = 0; i < filtered.size(); i++) {
+                    body += serializeModel(filtered[i]) + (i < filtered.size() - 1 ? ", " : "");
+                }
+                body += "]}";
+            }
+            body += "]";
+            res.set_content(ok(body), "application/json");
+        });
+
+        svr.Get(R"(/library/([^/]+))", [](const httplib::Request& req, httplib::Response& res) {
+            std::string slug = req.matches[1];
+            for (plugin::Plugin* p : rack::plugin::plugins) {
+                if (p->slug == slug) { res.set_content(ok(serializePlugin(p)), "application/json"); return; }
+            }
+            res.status = 404; res.set_content(err("Plugin not found"), "application/json");
+        });
+
+        svr.Post("/patch/save", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            std::string path = parseJsonString(req.body, "path");
+            if (path.empty()) { res.status = 400; res.set_content(err("Missing path"), "application/json"); return; }
+            taskQueue->post([rackApp, path]() { rackApp->patch->save(path); }).get();
+            res.set_content(ok("{\"saved\":" + jsonStr(path) + "}"), "application/json");
+        });
+
+        svr.Post("/patch/load", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            std::string path = parseJsonString(req.body, "path");
+            if (path.empty()) { res.status = 400; res.set_content(err("Missing path"), "application/json"); return; }
+            taskQueue->post([rackApp, path]() { rackApp->patch->load(path); }).get();
+            res.set_content(ok("{\"loaded\":" + jsonStr(path) + "}"), "application/json");
         });
     }
 
