@@ -357,6 +357,92 @@ static const char* MCP_TOOLS_JSON = R"json([
 {"name":"vcvrack_load_patch","description":"Load a VCV Rack patch from a .vcv file, replacing the current patch.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute file path to load"}},"required":["path"]}}
 ])json";
 
+// ─── MCP prompts ────────────────────────────────────────────────────────────
+
+static const char* MCP_PROMPTS_JSON = R"json([
+{
+  "name": "build_patch",
+  "description": "Step-by-step guide for building a VCV Rack patch from scratch. Use this whenever the user asks to create, design, or assemble a patch.",
+  "arguments": [
+    {"name": "description", "description": "What the patch should do (e.g. 'a basic subtractive synth voice', 'an LFO-modulated filter')", "required": true}
+  ]
+},
+{
+  "name": "connect_modules",
+  "description": "Guide for wiring cables between already-loaded modules.",
+  "arguments": [
+    {"name": "from_module", "description": "Source module name or ID", "required": true},
+    {"name": "to_module",   "description": "Destination module name or ID", "required": true}
+  ]
+},
+{
+  "name": "set_module_params",
+  "description": "Guide for reading and adjusting module parameters (knobs, switches, etc.).",
+  "arguments": [
+    {"name": "module", "description": "Module name or ID to configure", "required": true}
+  ]
+}
+])json";
+
+static std::string buildPromptMessages(const std::string& name, const std::string& args) {
+    auto argVal = [&](const std::string& key) -> std::string {
+        size_t pos = args.find("\"" + key + "\"");
+        if (pos == std::string::npos) return "";
+        pos = args.find(":", pos);
+        if (pos == std::string::npos) return "";
+        pos = args.find("\"", pos);
+        if (pos == std::string::npos) return "";
+        size_t end = args.find("\"", pos + 1);
+        if (end == std::string::npos) return "";
+        return args.substr(pos + 1, end - pos - 1);
+    };
+
+    if (name == "build_patch") {
+        std::string desc = argVal("description");
+        if (desc.empty()) desc = "a patch";
+        std::string text =
+            "You are building a VCV Rack patch: " + desc + ".\n\n"
+            "Follow these steps:\n"
+            "1. Call vcvrack_get_status to confirm the server is running.\n"
+            "2. Call vcvrack_search_library to find suitable modules (VCO, VCF, VCA, ADSR, Audio, etc.).\n"
+            "3. Call vcvrack_add_module for each required module, noting the returned module ID.\n"
+            "4. Call vcvrack_get_module on each module to discover input/output port indices.\n"
+            "5. Call vcvrack_add_cable to wire the signal path (e.g. VCO OUT -> VCF IN -> VCA IN -> Audio IN).\n"
+            "6. Call vcvrack_get_params then vcvrack_set_params to tune frequencies, resonance, levels, etc.\n"
+            "7. Optionally call vcvrack_save_patch to persist the patch.\n\n"
+            "Always verify each step's result before proceeding to the next.";
+        return "[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":" + jsonStr(text) + "}}]";
+    }
+
+    if (name == "connect_modules") {
+        std::string from = argVal("from_module");
+        std::string to   = argVal("to_module");
+        std::string text =
+            "You need to connect " + (from.empty() ? "the source module" : from) +
+            " to " + (to.empty() ? "the destination module" : to) + " in VCV Rack.\n\n"
+            "Steps:\n"
+            "1. Call vcvrack_list_modules to find module IDs if you don't already have them.\n"
+            "2. Call vcvrack_get_module on both modules to see their output and input port indices.\n"
+            "3. Call vcvrack_add_cable with outputModuleId, outputId, inputModuleId, inputId.\n"
+            "4. Verify with vcvrack_list_cables that the cable appears.";
+        return "[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":" + jsonStr(text) + "}}]";
+    }
+
+    if (name == "set_module_params") {
+        std::string mod = argVal("module");
+        std::string text =
+            "You need to configure parameters on " + (mod.empty() ? "a module" : mod) + ".\n\n"
+            "Steps:\n"
+            "1. If you don't have the module ID, call vcvrack_list_modules.\n"
+            "2. Call vcvrack_get_params with the moduleId to list all parameters, their indices, current values, and min/max ranges.\n"
+            "3. Call vcvrack_set_params with an array of {id, value} objects to apply the desired settings.\n"
+            "4. Call vcvrack_get_params again to confirm the values were applied.";
+        return "[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":" + jsonStr(text) + "}}]";
+    }
+
+    return "[]";
+}
+
 // ─── Module Definition ─────────────────────────────────────────────────────
 
 struct RackMcpServer : Module {
@@ -414,6 +500,7 @@ public:
     int port;
     UITaskQueue* taskQueue = nullptr;
     RackMcpServer* parent = nullptr;
+    rack::Context* rackApp = nullptr; // captured at setup time when engine is valid
 
     RackHttpServer() : port(2600) {}
     ~RackHttpServer() { stop(); }
@@ -421,11 +508,12 @@ public:
     // ─── MCP tool dispatcher ────────────────────────────────────────────────
 
     std::string dispatchTool(const std::string& name, const std::string& args) {
-        auto* rackApp = APP;
+        auto* rackApp = this->rackApp;
 
         if (name == "vcvrack_get_status") {
             float sr = 0.f; int count = 0;
             taskQueue->post([rackApp, &sr, &count]() {
+                if (!rackApp || !rackApp->engine) return;
                 sr = rackApp->engine->getSampleRate();
                 count = (int)rackApp->engine->getModuleIds().size();
             }).get();
@@ -437,6 +525,7 @@ public:
         if (name == "vcvrack_list_modules") {
             std::string body;
             taskQueue->post([rackApp, &body]() {
+                if (!rackApp || !rackApp->engine) { body = "[]"; return; }
                 std::vector<int64_t> ids = rackApp->engine->getModuleIds();
                 body = "[";
                 for (size_t i = 0; i < ids.size(); i++) {
@@ -454,6 +543,7 @@ public:
             int64_t id = rawId.empty() ? -1 : (int64_t)std::stod(rawId);
             std::string body;
             taskQueue->post([rackApp, id, &body]() {
+                if (!rackApp || !rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 body = mod ? serializeModuleDetail(mod) : "";
             }).get();
@@ -474,6 +564,7 @@ public:
             if (!model) return toolFail("Model not found: " + pSlug + "/" + mSlug);
             int64_t moduleId = -1;
             taskQueue->post([rackApp, model, x, y, &moduleId]() mutable {
+                if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 engine::Module* m = model->createModule();
                 if (!m) return;
                 rackApp->engine->addModule(m);
@@ -512,6 +603,7 @@ public:
             int64_t id = (int64_t)parseJsonDouble(args, "moduleId", -1);
             std::string body;
             taskQueue->post([rackApp, id, &body]() {
+                if (!rackApp || !rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 if (!mod) return;
                 body = "[";
@@ -530,6 +622,7 @@ public:
             std::string paramsRaw = parseRawValue(args, "params");
             int applied = 0; bool found = false;
             taskQueue->post([rackApp, id, paramsRaw, &applied, &found]() {
+                if (!rackApp || !rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 if (!mod) return;
                 found = true;
@@ -556,11 +649,12 @@ public:
         if (name == "vcvrack_list_cables") {
             std::string body;
             taskQueue->post([rackApp, &body]() {
+                if (!rackApp || !rackApp->engine) { body = "[]"; return; }
                 std::vector<int64_t> ids = rackApp->engine->getCableIds();
                 body = "[";
                 for (size_t i = 0; i < ids.size(); i++) {
                     engine::Cable* c = rackApp->engine->getCable(ids[i]);
-                    if (c) {
+                    if (c && c->outputModule && c->inputModule) {
                         body += "{\"id\":" + std::to_string(c->id) +
                                 ",\"outputModuleId\":" + std::to_string(c->outputModule->id) +
                                 ",\"outputId\":" + std::to_string(c->outputId) +
@@ -581,6 +675,7 @@ public:
             int inP  = (int)parseJsonDouble(args, "inputId", 0);
             int64_t cableId = -1;
             taskQueue->post([rackApp, outM, outP, inM, inP, &cableId]() {
+                if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 engine::Module* oMod = rackApp->engine->getModule(outM);
                 engine::Module* iMod = rackApp->engine->getModule(inM);
                 if (!oMod || !iMod) return;
@@ -610,6 +705,7 @@ public:
             int64_t id = (int64_t)parseJsonDouble(args, "id", -1);
             bool found = false;
             taskQueue->post([rackApp, id, &found]() {
+                if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 app::CableWidget* cw = rackApp->scene->rack->getCable(id);
                 if (cw) {
                     found = true;
@@ -679,14 +775,14 @@ public:
         if (name == "vcvrack_save_patch") {
             std::string path = parseJsonString(args, "path");
             if (path.empty()) return toolFail("Missing 'path'");
-            taskQueue->post([rackApp, path]() { rackApp->patch->save(path); }).get();
+            taskQueue->post([rackApp, path]() { if (rackApp && rackApp->patch) rackApp->patch->save(path); }).get();
             return toolOk("{\"saved\":" + jsonStr(path) + "}");
         }
 
         if (name == "vcvrack_load_patch") {
             std::string path = parseJsonString(args, "path");
             if (path.empty()) return toolFail("Missing 'path'");
-            taskQueue->post([rackApp, path]() { rackApp->patch->load(path); }).get();
+            taskQueue->post([rackApp, path]() { if (rackApp && rackApp->patch) rackApp->patch->load(path); }).get();
             return toolOk("{\"loaded\":" + jsonStr(path) + "}");
         }
 
@@ -708,7 +804,7 @@ public:
         }
 
         if (method == "initialize") {
-            res.set_content(mcpOk(id, R"({"protocolVersion":"2024-11-05","capabilities":{"tools":{}},"serverInfo":{"name":"VCV Rack MCP Bridge","version":"1.3.0"}})"), "application/json");
+            res.set_content(mcpOk(id, R"({"protocolVersion":"2024-11-05","capabilities":{"tools":{},"prompts":{}},"serverInfo":{"name":"VCV Rack MCP Bridge","version":"1.3.0"}})"), "application/json");
             return;
         }
 
@@ -719,6 +815,29 @@ public:
 
         if (method == "tools/list") {
             res.set_content(mcpOk(id, "{\"tools\":" + std::string(MCP_TOOLS_JSON) + "}"), "application/json");
+            return;
+        }
+
+        if (method == "prompts/list") {
+            res.set_content(mcpOk(id, "{\"prompts\":" + std::string(MCP_PROMPTS_JSON) + "}"), "application/json");
+            return;
+        }
+
+        if (method == "prompts/get") {
+            std::string params   = parseRawValue(body, "params");
+            std::string promptName = parseJsonString(params, "name");
+            std::string promptArgs = parseRawValue(params, "arguments");
+            if (promptArgs.empty()) promptArgs = "{}";
+            if (promptName.empty()) {
+                res.set_content(mcpErr(id, -32602, "Missing prompt name"), "application/json");
+                return;
+            }
+            std::string messages = buildPromptMessages(promptName, promptArgs);
+            if (messages == "[]") {
+                res.set_content(mcpErr(id, -32602, "Unknown prompt: " + promptName), "application/json");
+                return;
+            }
+            res.set_content(mcpOk(id, "{\"description\":" + jsonStr(promptName) + ",\"messages\":" + messages + "}"), "application/json");
             return;
         }
 
@@ -743,7 +862,8 @@ public:
     }
 
     void setupRoutes() {
-        auto* rackApp = APP;
+        rackApp = APP;
+        auto* rackApp = this->rackApp; // local alias for lambda captures
         svr.set_pre_routing_handler([](const httplib::Request&, httplib::Response& res) {
             res.set_header("Access-Control-Allow-Origin", "*");
             res.set_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
@@ -754,8 +874,10 @@ public:
         svr.Options(".*", [](const httplib::Request&, httplib::Response& res) { res.status = 204; });
 
         svr.Get("/status", [rackApp, this](const httplib::Request&, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             float sr = 0.f; int count = 0;
             taskQueue->post([rackApp, &sr, &count]() {
+                if (!rackApp->engine) return;
                 sr = rackApp->engine->getSampleRate();
                 count = (int)rackApp->engine->getModuleIds().size();
             }).get();
@@ -766,8 +888,10 @@ public:
         });
 
         svr.Get("/modules", [rackApp, this](const httplib::Request&, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             std::string body;
             taskQueue->post([rackApp, &body]() {
+                if (!rackApp->engine) { body = "[]"; return; }
                 std::vector<int64_t> ids = rackApp->engine->getModuleIds();
                 body = "[";
                 for (size_t i = 0; i < ids.size(); i++) {
@@ -780,9 +904,11 @@ public:
         });
 
         svr.Get(R"(/modules/(\d+)$)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             int64_t id = std::stoll(req.matches[1]);
             std::string body;
             taskQueue->post([rackApp, id, &body]() {
+                if (!rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 body = mod ? serializeModuleDetail(mod) : "null";
             }).get();
@@ -791,6 +917,7 @@ public:
         });
 
         svr.Post("/modules/add", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine || !rackApp->scene || !rackApp->scene->rack) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             std::string pSlug = parseJsonString(req.body, "plugin"), mSlug = parseJsonString(req.body, "slug");
             float x = (float)parseJsonDouble(req.body, "x", -1.0), y = (float)parseJsonDouble(req.body, "y", 0.0);
             plugin::Model* model = nullptr;
@@ -798,6 +925,7 @@ public:
             if (!model) { res.status = 404; res.set_content(err("Model not found"), "application/json"); return; }
             int64_t moduleId = -1;
             taskQueue->post([rackApp, model, x, y, &moduleId]() mutable {
+                if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 engine::Module* m = model->createModule(); if (!m) return;
                 rackApp->engine->addModule(m); moduleId = m->id;
                 app::ModuleWidget* mw = model->createModuleWidget(m); if (!mw) return;
@@ -824,9 +952,11 @@ public:
         });
 
         svr.Get(R"(/modules/(\d+)/params)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             int64_t id = std::stoll(req.matches[1]);
             std::string body;
             taskQueue->post([rackApp, id, &body]() {
+                if (!rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 if (!mod) { body = "null"; return; }
                 body = "[";
@@ -840,6 +970,7 @@ public:
         });
 
         svr.Post(R"(/modules/(\d+)/params)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             int64_t id = std::stoll(req.matches[1]);
             const std::string requestBody = req.body;
             int applied = 0; bool found = false;
@@ -863,15 +994,17 @@ public:
         });
 
         svr.Get("/cables", [rackApp, this](const httplib::Request&, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             std::string body;
             taskQueue->post([rackApp, &body]() {
+                if (!rackApp->engine) { body = "[]"; return; }
                 std::vector<int64_t> ids = rackApp->engine->getCableIds();
                 body = "[";
                 for (size_t i = 0; i < ids.size(); i++) {
                     engine::Cable* c = rackApp->engine->getCable(ids[i]);
-                    if (c) {
-                        body += "{\"id\":" + std::to_string(c->id) + ", \"outputModuleId\":" + std::to_string(c->outputModule->id) + 
-                                ", \"outputId\":" + std::to_string(c->outputId) + ", \"inputModuleId\":" + std::to_string(c->inputModule->id) + 
+                    if (c && c->outputModule && c->inputModule) {
+                        body += "{\"id\":" + std::to_string(c->id) + ", \"outputModuleId\":" + std::to_string(c->outputModule->id) +
+                                ", \"outputId\":" + std::to_string(c->outputId) + ", \"inputModuleId\":" + std::to_string(c->inputModule->id) +
                                 ", \"inputId\":" + std::to_string(c->inputId) + "}";
                     } else { body += "null"; }
                     if (i < ids.size() - 1) body += ", ";
@@ -882,11 +1015,13 @@ public:
         });
 
         svr.Post("/cables", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine || !rackApp->scene || !rackApp->scene->rack) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             int64_t outM = (int64_t)parseJsonDouble(req.body, "outputModuleId", -1), inM = (int64_t)parseJsonDouble(req.body, "inputModuleId", -1);
             int outP = (int)parseJsonDouble(req.body, "outputId", 0), inP = (int)parseJsonDouble(req.body, "inputId", 0);
             int64_t cableId = -1;
             
             taskQueue->post([rackApp, outM, outP, inM, inP, &cableId]() {
+                if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 engine::Module* oMod = rackApp->engine->getModule(outM);
                 engine::Module* iMod = rackApp->engine->getModule(inM);
                 if (!oMod || !iMod) return;
@@ -922,10 +1057,12 @@ public:
         });
 
         svr.Delete(R"(/cables/(\d+))", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine || !rackApp->scene || !rackApp->scene->rack) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             int64_t id = std::stoll(req.matches[1]);
             bool found = false;
-            
+
             taskQueue->post([rackApp, id, &found]() {
+                if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 app::CableWidget* cw = rackApp->scene->rack->getCable(id);
                 if (cw) {
                     found = true;
@@ -947,8 +1084,9 @@ public:
         });
 
         svr.Get("/sample-rate", [rackApp, this](const httplib::Request&, httplib::Response& res) {
+            if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             float sr = 0.f;
-            taskQueue->post([rackApp, &sr]() { sr = rackApp->engine->getSampleRate(); }).get();
+            taskQueue->post([rackApp, &sr]() { if (rackApp && rackApp->engine) sr = rackApp->engine->getSampleRate(); }).get();
             res.set_content(ok("{\"sampleRate\":" + std::to_string(sr) + "}"), "application/json");
         });
 
@@ -997,16 +1135,19 @@ public:
         });
 
         svr.Post("/patch/save", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            if (!rackApp || !rackApp->patch) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             std::string path = parseJsonString(req.body, "path");
             if (path.empty()) { res.status = 400; res.set_content(err("Missing path"), "application/json"); return; }
-            taskQueue->post([rackApp, path]() { rackApp->patch->save(path); }).get();
+            taskQueue->post([rackApp, path]() { if (rackApp && rackApp->patch) rackApp->patch->save(path); }).get();
+
             res.set_content(ok("{\"saved\":" + jsonStr(path) + "}"), "application/json");
         });
 
         svr.Post("/patch/load", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            if (!rackApp || !rackApp->patch) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             std::string path = parseJsonString(req.body, "path");
             if (path.empty()) { res.status = 400; res.set_content(err("Missing path"), "application/json"); return; }
-            taskQueue->post([rackApp, path]() { rackApp->patch->load(path); }).get();
+            taskQueue->post([rackApp, path]() { if (rackApp->patch) rackApp->patch->load(path); }).get();
             res.set_content(ok("{\"loaded\":" + jsonStr(path) + "}"), "application/json");
         });
 
