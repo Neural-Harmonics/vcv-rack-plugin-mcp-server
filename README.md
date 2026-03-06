@@ -60,9 +60,17 @@ Once the plugin is approved in the VCV Library:
 ### From GitHub Releases
 
 1. Open the [GitHub Releases](https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server/releases) page.
-2. Download the `.vcvplugin` file for your platform.
-3. Double-click the file, or place it in your Rack 2 plugins folder.
-4. Restart Rack and add the module from the browser.
+2. Download the `.zip` file for your platform.
+3. Unzip it. You should get a folder named `VCVRackMcpServer`.
+4. Move that folder into your Rack 2 plugins folder:
+
+```text
+macOS Apple Silicon: ~/Library/Application Support/Rack2/plugins-mac-arm64/
+macOS Intel: ~/Library/Application Support/Rack2/plugins-mac-x64/
+Linux x64: ~/.local/share/Rack2/plugins-lin-x64/
+```
+
+5. Restart Rack and add the module from the browser.
 
 ### Build your own release package
 
@@ -72,13 +80,13 @@ If you are building from source and want the same installable artifact used on G
 make dist
 ```
 
-This creates a `.vcvplugin` archive in `dist/`, for example:
+This creates a `.zip` archive in `dist/`, for example:
 
 ```text
-dist/VCVRackMcpServer-2.1.0-mac-arm64.vcvplugin
+dist/VCVRackMcpServer-2.1.0-mac-arm64.zip
 ```
 
-That file is the one to upload to a GitHub Release or to install manually in Rack.
+Unzip that file and move the extracted `VCVRackMcpServer` folder into your Rack plugins directory.
 
 ## Quick start in Rack
 

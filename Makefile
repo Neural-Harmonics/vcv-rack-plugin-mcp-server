@@ -8,7 +8,7 @@
 # USAGE:
 #   make           # configure + build  (downloads deps automatically)
 #   make install   # install to your Rack plugins folder
-#   make dist      # create distributable .vcvplugin package in dist/
+#   make dist      # create distributable .zip package in dist/
 #   make clean     # remove build/ and dist/
 #
 # Override build directory:
@@ -68,10 +68,10 @@ all: $(BUILD_DIR)/$(PLUGIN_FILE)
 install: $(BUILD_DIR)/$(PLUGIN_FILE)
 	cmake --install $(BUILD_DIR)
 
-# ── Package as .vcvplugin (zip: plugin binary + generated plugin.json + res/) ─
+# ── Package as .zip (plugin binary + generated plugin.json + res/) ─
 dist: $(BUILD_DIR)/$(PLUGIN_FILE)
 	cmake --build $(BUILD_DIR) --target dist
-	@echo "Created dist/$(SLUG)-$(VERSION)-$(DIST_PLATFORM).vcvplugin"
+	@echo "Created dist/$(SLUG)-$(VERSION)-$(DIST_PLATFORM).zip"
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # Unit tests: compile standalone C++ test binary and run it (no Rack needed)

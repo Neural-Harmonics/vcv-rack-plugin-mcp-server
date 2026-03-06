@@ -218,10 +218,10 @@ install(DIRECTORY res/
 
 message(STATUS "Install target: ${PLUGIN_INSTALL_DIR}")
 
-# ── Package target (.vcvplugin archive for GitHub Releases / manual install) ─
+# ── Package target (.zip archive for GitHub Releases / manual install) ─
 set(PACKAGE_ROOT_DIR "${CMAKE_BINARY_DIR}/package/${PROJECT_NAME}")
 set(DIST_DIR "${CMAKE_SOURCE_DIR}/dist")
-set(VCVPLUGIN_PATH "${DIST_DIR}/${PROJECT_NAME}-${PROJECT_VERSION}-${RACK_ARCH}.vcvplugin")
+set(DIST_ARCHIVE_PATH "${DIST_DIR}/${PROJECT_NAME}-${PROJECT_VERSION}-${RACK_ARCH}.zip")
 
 add_custom_target(dist
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/package"
@@ -231,9 +231,9 @@ add_custom_target(dist
   COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/plugin.json" "${PACKAGE_ROOT_DIR}/plugin.json"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/res" "${PACKAGE_ROOT_DIR}/res"
   COMMAND ${CMAKE_COMMAND} -E make_directory "${DIST_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}/package" ${CMAKE_COMMAND} -E tar "cf" "${VCVPLUGIN_PATH}" --format=zip "${PROJECT_NAME}"
+  COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}/package" ${CMAKE_COMMAND} -E tar "cf" "${DIST_ARCHIVE_PATH}" --format=zip "${PROJECT_NAME}"
   DEPENDS VCVRackMcpServer
-  COMMENT "Packaging ${VCVPLUGIN_PATH}"
+  COMMENT "Packaging ${DIST_ARCHIVE_PATH}"
 )
 
 # ── Summary ───────────────────────────────────────────────────────────────────

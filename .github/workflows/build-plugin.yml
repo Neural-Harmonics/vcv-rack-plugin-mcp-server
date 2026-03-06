@@ -155,7 +155,7 @@ jobs:
           for artifact_dir in _artifacts/stage-*; do
             artifact_name=$(basename "$artifact_dir")
             platform="${artifact_name#stage-}"
-            out_file="_release/${slug}-${version}-${platform}.vcvplugin"
+            out_file="_release/${slug}-${version}-${platform}.zip"
 
             if [ -d "$artifact_dir/VCVRackMcpServer" ]; then
               zip_root="$artifact_dir"
@@ -181,7 +181,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: release-bundles
-          path: _release/*.vcvplugin
+          path: _release/*.zip
 
 # # =============================================================================
 # # Job 5 — Build Windows x64 (native runner, CMake + MSYS2/MinGW)
@@ -225,13 +225,13 @@ jobs:
 #             -DCMAKE_BUILD_TYPE=Release
 #           cmake --build build --parallel
 
-#       - name: Package .vcvplugin
+#       - name: Package .zip bundle
 #         run: make dist BUILD_DIR=build
 
 #       - uses: actions/upload-artifact@v4
 #         with:
 #           name: win-x64
-#           path: dist/*.vcvplugin
+#           path: dist/*.zip
 
 # =============================================================================
 # Job 6 — Publish GitHub Release (only on version tags like v2.0.0)
@@ -270,19 +270,23 @@ jobs:
             VCV Rack 2 plugin: exposes Rack internals to AI clients (Claude, Cursor, etc.) via HTTP/MCP.
 
             ### Install on macOS
-            1. Download the `.vcvplugin` that matches your Mac:
-               - `*-mac-arm64.vcvplugin` for Apple Silicon
-               - `*-mac-x64.vcvplugin` for Intel
-            2. Double-click the downloaded file to let VCV Rack install it automatically.
-            3. If needed, move the file manually into your Rack 2 plugins folder and restart VCV Rack.
+            1. Download the `.zip` that matches your Mac:
+               - `*-mac-arm64.zip` for Apple Silicon
+               - `*-mac-x64.zip` for Intel
+            2. Unzip it. This creates a `VCVRackMcpServer` folder.
+            3. Move `VCVRackMcpServer` into:
+               - `~/Library/Application Support/Rack2/plugins-mac-arm64/` on Apple Silicon
+               - `~/Library/Application Support/Rack2/plugins-mac-x64/` on Intel Macs
+            4. Restart VCV Rack.
 
             ### Install on Linux
-            1. Download `*-lin-x64.vcvplugin`.
-            2. Move it into your Rack 2 plugins folder, or install it through the VCV Rack UI if your desktop opens `.vcvplugin` files directly.
-            3. Restart VCV Rack and add the `MCP Server` module from the module browser.
+            1. Download `*-lin-x64.zip`.
+            2. Unzip it. This creates a `VCVRackMcpServer` folder.
+            3. Move `VCVRackMcpServer` into `~/.local/share/Rack2/plugins-lin-x64/`.
+            4. Restart VCV Rack and add the `MCP Server` module from the module browser.
 
             ### What's new
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
           draft: false
           prerelease: false
-          files: _artifacts/**/*.vcvplugin
+          files: _artifacts/**/*.zip
