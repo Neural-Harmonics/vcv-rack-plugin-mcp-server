@@ -33,6 +33,17 @@ std::future<void> UITaskQueue::post(std::function<void()> fn, const std::string&
     return p->get_future();
 }
 
+bool UITaskQueue::postSync(std::function<void()> fn, const std::string& label, int timeoutSecs) {
+    auto fut = post(fn, label);
+    if (fut.wait_for(std::chrono::seconds(timeoutSecs)) == std::future_status::timeout) {
+        WARN("[RackMcpServer] postSync: task '%s' timed out after %ds (UI thread not draining)",
+             label.c_str(), timeoutSecs);
+        return false;
+    }
+    try { fut.get(); } catch (...) {}
+    return true;
+}
+
 void UITaskQueue::drain() {
     std::queue<Task> local;
     {
@@ -824,11 +835,11 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
 
         if (name == "vcvrack_get_status") {
             float sr = 0.f; int count = 0;
-            taskQueue->post([rackApp, &sr, &count]() {
+            if (!taskQueue->postSync([rackApp, &sr, &count]() {
                 if (!rackApp || !rackApp->engine) return;
                 sr = rackApp->engine->getSampleRate();
                 count = (int)rackApp->engine->getModuleIds().size();
-            }, "get_status").get();
+            }, "get_status")) return toolFail("UI thread not responding (timed out)");
             return toolOk("{\"server\":\"VCV Rack MCP Bridge\",\"version\":\"1.3.0\","
                           "\"sampleRate\":" + std::to_string(sr) +
                           ",\"moduleCount\":" + std::to_string(count) + "}");
@@ -837,9 +848,9 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
         if (name == "vcvrack_get_mcp_position") {
             std::string body;
             int64_t mcpId = parent ? parent->id : -1;
-            taskQueue->post([rackApp, &body, mcpId]() {
+            if (!taskQueue->postSync([rackApp, &body, mcpId]() {
                 body = getMcpModulePositionJson(rackApp && rackApp->scene ? rackApp->scene->rack : nullptr, mcpId);
-            }, "get_mcp_position").get();
+            }, "get_mcp_position")) return toolFail("UI thread not responding (timed out)");
             return toolOk(body);
         }
 
@@ -863,7 +874,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
 
         if (name == "vcvrack_list_modules") {
             std::string body;
-            taskQueue->post([rackApp, &body]() {
+            if (!taskQueue->postSync([rackApp, &body]() {
                 if (!rackApp || !rackApp->engine) { body = "[]"; return; }
                 std::vector<int64_t> ids = rackApp->engine->getModuleIds();
                 body = "[";
@@ -873,7 +884,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                     if (i < ids.size() - 1) body += ",";
                 }
                 body += "]";
-            }, "list_modules").get();
+            }, "list_modules")) return toolFail("UI thread not responding (timed out)");
             return toolOk(body);
         }
 
@@ -882,11 +893,11 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
             if (!rawId.empty() && rawId.front() == '"') rawId = rawId.substr(1, rawId.size() - 2);
             int64_t id = rawId.empty() ? -1 : std::stoll(rawId);
             std::string body;
-            taskQueue->post([rackApp, id, &body]() {
+            if (!taskQueue->postSync([rackApp, id, &body]() {
                 if (!rackApp || !rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 body = mod ? serializeModuleDetail(mod) : "";
-            }, "get_module/" + std::to_string(id)).get();
+            }, "get_module/" + std::to_string(id))) return toolFail("UI thread not responding (timed out)");
             if (body.empty()) return toolFail("Module not found: " + std::to_string(id));
             return toolOk(body);
         }
@@ -897,7 +908,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
             float mcpX = 0.f, mcpY = 0.f;
             LayoutPrefs prefs = readLayoutPrefs(parent);
             int64_t mcpId = parent ? parent->id : -1;
-            taskQueue->post([rackApp, &rows, &rowTerminalOutputX, &mcpX, &mcpY, mcpId]() {
+            if (!taskQueue->postSync([rackApp, &rows, &rowTerminalOutputX, &mcpX, &mcpY, mcpId]() {
                 if (!rackApp || !rackApp->engine) return;
                 for (int64_t id : rackApp->engine->getModuleIds()) {
                     app::ModuleWidget* mw = rackApp->scene->rack->getModule(id);
@@ -921,7 +932,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                         it->second.count++;
                     }
                 }
-            }, "get_rack_layout").get();
+            }, "get_rack_layout")) return toolFail("UI thread not responding (timed out)");
             return toolOk(buildLayoutJson(rows, rowTerminalOutputX, mcpX, mcpY, prefs));
         }
 
@@ -942,7 +953,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
             float finalX = 0.f, finalY = 0.f, finalW = 0.f;
             LayoutPrefs prefs = readLayoutPrefs(parent);
             int64_t mcpId = parent ? parent->id : -1;
-            taskQueue->post([rackApp, model, x, y, prefs, mcpId, &moduleId, &finalX, &finalY, &finalW]() mutable {
+            if (!taskQueue->postSync([rackApp, model, x, y, prefs, mcpId, &moduleId, &finalX, &finalY, &finalW]() mutable {
                 if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 engine::Module* m = model->createModule();
                 if (!m) return;
@@ -965,7 +976,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                 finalX = mw->box.pos.x;
                 finalY = mw->box.pos.y;
                 finalW = mw->box.size.x;
-            }, "add_module/" + pSlug + "/" + mSlug).get();
+            }, "add_module/" + pSlug + "/" + mSlug)) return toolFail("UI thread not responding (timed out)");
             if (moduleId < 0 || finalW <= 0.f) return toolFail("Failed to create module (outside matrix preferences or invalid model)");
             return toolOk("{\"id\":" + std::to_string(moduleId)
                         + ",\"plugin\":" + jsonStr(pSlug)
@@ -989,7 +1000,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
         if (name == "vcvrack_get_params") {
             int64_t id = (int64_t)parseJsonDouble(args, "moduleId", -1);
             std::string body;
-            taskQueue->post([rackApp, id, &body]() {
+            if (!taskQueue->postSync([rackApp, id, &body]() {
                 if (!rackApp || !rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 if (!mod) return;
@@ -999,7 +1010,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                     if (i < (int)mod->params.size() - 1) body += ",";
                 }
                 body += "]";
-            }, "get_params/" + std::to_string(id)).get();
+            }, "get_params/" + std::to_string(id))) return toolFail("UI thread not responding (timed out)");
             if (body.empty()) return toolFail("Module not found: " + std::to_string(id));
             return toolOk(body);
         }
@@ -1008,7 +1019,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
             int64_t id = (int64_t)parseJsonDouble(args, "moduleId", -1);
             std::string paramsRaw = parseRawValue(args, "params");
             int applied = 0; bool found = false;
-            taskQueue->post([rackApp, id, paramsRaw, &applied, &found]() {
+            if (!taskQueue->postSync([rackApp, id, paramsRaw, &applied, &found]() {
                 if (!rackApp || !rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 if (!mod) return;
@@ -1028,14 +1039,14 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                     }
                     pos = end + 1;
                 }
-            }, "set_params/" + std::to_string(id)).get();
+            }, "set_params/" + std::to_string(id))) return toolFail("UI thread not responding (timed out)");
             if (!found) return toolFail("Module not found: " + std::to_string(id));
             return toolOk("{\"applied\":" + std::to_string(applied) + "}");
         }
 
         if (name == "vcvrack_list_cables") {
             std::string body;
-            taskQueue->post([rackApp, &body]() {
+            if (!taskQueue->postSync([rackApp, &body]() {
                 if (!rackApp || !rackApp->engine) { body = "[]"; return; }
                 std::vector<int64_t> ids = rackApp->engine->getCableIds();
                 body = "[";
@@ -1051,7 +1062,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                     if (i < ids.size() - 1) body += ",";
                 }
                 body += "]";
-            }, "list_cables").get();
+            }, "list_cables")) return toolFail("UI thread not responding (timed out)");
             return toolOk(body);
         }
 
@@ -1061,7 +1072,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
             int outP = (int)parseJsonDouble(args, "outputId", 0);
             int inP  = (int)parseJsonDouble(args, "inputId", 0);
             int64_t cableId = -1;
-            taskQueue->post([rackApp, outM, outP, inM, inP, &cableId]() {
+            if (!taskQueue->postSync([rackApp, outM, outP, inM, inP, &cableId]() {
                 if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 engine::Module* oMod = rackApp->engine->getModule(outM);
                 engine::Module* iMod = rackApp->engine->getModule(inM);
@@ -1083,7 +1094,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                 cw->outputPort = oPort;
                 cw->inputPort = iPort;
                 rackApp->scene->rack->addCable(cw);
-            }, "add_cable/" + std::to_string(outM) + "→" + std::to_string(inM)).get();
+            }, "add_cable/" + std::to_string(outM) + "→" + std::to_string(inM))) return toolFail("UI thread not responding (timed out)");
             if (cableId < 0) return toolFail("Failed to connect: ports or modules not found");
             return toolOk("{\"id\":" + std::to_string(cableId) + "}");
         }
@@ -1091,7 +1102,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
         if (name == "vcvrack_delete_cable") {
             int64_t id = (int64_t)parseJsonDouble(args, "id", -1);
             bool found = false;
-            taskQueue->post([rackApp, id, &found]() {
+            if (!taskQueue->postSync([rackApp, id, &found]() {
                 if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 app::CableWidget* cw = rackApp->scene->rack->getCable(id);
                 if (cw) {
@@ -1102,14 +1113,14 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                     engine::Cable* c = rackApp->engine->getCable(id);
                     if (c) { found = true; rackApp->engine->removeCable(c); delete c; }
                 }
-            }, "delete_cable/" + std::to_string(id)).get();
+            }, "delete_cable/" + std::to_string(id))) return toolFail("UI thread not responding (timed out)");
             if (!found) return toolFail("Cable not found: " + std::to_string(id));
             return toolOk("{\"removed\":true}");
         }
 
         if (name == "vcvrack_get_sample_rate") {
             float sr = 0.f;
-            taskQueue->post([rackApp, &sr]() { sr = rackApp->engine->getSampleRate(); }, "get_sample_rate").get();
+            if (!taskQueue->postSync([rackApp, &sr]() { sr = rackApp->engine->getSampleRate(); }, "get_sample_rate")) return toolFail("UI thread not responding (timed out)");
             return toolOk("{\"sampleRate\":" + std::to_string(sr) + "}");
         }
 
@@ -1292,11 +1303,11 @@ void RackHttpServer::setupRoutes() {
         svr.Get("/status", [rackApp, this](const httplib::Request&, httplib::Response& res) {
             if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             float sr = 0.f; int count = 0;
-            taskQueue->post([rackApp, &sr, &count]() {
+            if (!taskQueue->postSync([rackApp, &sr, &count]() {
                 if (!rackApp->engine) return;
                 sr = rackApp->engine->getSampleRate();
                 count = (int)rackApp->engine->getModuleIds().size();
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             std::string body = "{" + jsonKVs("server", "VCV Rack MCP Bridge") + jsonKVs("version", "1.3.0") +
                 jsonKVs("build", std::string(__DATE__) + " " + __TIME__) +
                 jsonKV("sampleRate", std::to_string(sr)) + jsonKV("moduleCount", std::to_string(count), true) + "}";
@@ -1307,9 +1318,9 @@ void RackHttpServer::setupRoutes() {
             if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             std::string body;
             int64_t mcpId = parent ? parent->id : -1;
-            taskQueue->post([rackApp, &body, mcpId]() {
+            if (!taskQueue->postSync([rackApp, &body, mcpId]() {
                 body = getMcpModulePositionJson(rackApp && rackApp->scene ? rackApp->scene->rack : nullptr, mcpId);
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             res.set_content(ok(body), "application/json");
         });
 
@@ -1336,7 +1347,7 @@ void RackHttpServer::setupRoutes() {
         svr.Get("/modules", [rackApp, this](const httplib::Request&, httplib::Response& res) {
             if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             std::string body;
-            taskQueue->post([rackApp, &body]() {
+            if (!taskQueue->postSync([rackApp, &body]() {
                 if (!rackApp->engine) { body = "[]"; return; }
                 std::vector<int64_t> ids = rackApp->engine->getModuleIds();
                 body = "[";
@@ -1345,7 +1356,7 @@ void RackHttpServer::setupRoutes() {
                     body += (mod ? serializeModuleSummary(mod) : "null") + (i < ids.size() - 1 ? ", " : "");
                 }
                 body += "]";
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             res.set_content(ok(body), "application/json");
         });
 
@@ -1358,7 +1369,7 @@ void RackHttpServer::setupRoutes() {
             LayoutPrefs prefs = readLayoutPrefs(parent);
             int64_t mcpId = parent ? parent->id : -1;
 
-            taskQueue->post([rackApp, &rows, &rowTerminalOutputX, &mcpX, &mcpY, mcpId]() {
+            if (!taskQueue->postSync([rackApp, &rows, &rowTerminalOutputX, &mcpX, &mcpY, mcpId]() {
                 for (int64_t id : rackApp->engine->getModuleIds()) {
                     app::ModuleWidget* mw = rackApp->scene->rack->getModule(id);
                     if (!mw) continue;
@@ -1381,7 +1392,7 @@ void RackHttpServer::setupRoutes() {
                         it->second.count++;
                     }
                 }
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
 
             std::string body = buildLayoutJson(rows, rowTerminalOutputX, mcpX, mcpY, prefs);
             res.set_content(ok(body), "application/json");
@@ -1391,11 +1402,11 @@ void RackHttpServer::setupRoutes() {
             if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             int64_t id = std::stoll(req.matches[1]);
             std::string body;
-            taskQueue->post([rackApp, id, &body]() {
+            if (!taskQueue->postSync([rackApp, id, &body]() {
                 if (!rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 body = mod ? serializeModuleDetail(mod) : "null";
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             if (body == "null") { res.status = 404; res.set_content(err("Module not found"), "application/json"); }
             else res.set_content(ok(body), "application/json");
         });
@@ -1412,7 +1423,7 @@ void RackHttpServer::setupRoutes() {
             std::string failReason;
             LayoutPrefs prefs = readLayoutPrefs(parent);
             int64_t mcpId = parent ? parent->id : -1;
-            taskQueue->post([this, rackApp, model, x, y, nearId, prefs, mcpId, &moduleId, &failReason]() mutable {
+            if (!taskQueue->postSync([this, rackApp, model, x, y, nearId, prefs, mcpId, &moduleId, &failReason]() mutable {
                 if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 engine::Module* m = model->createModule(); if (!m) return;
                 app::ModuleWidget* mw = model->createModuleWidget(m); if (!mw) { delete m; return; }
@@ -1444,7 +1455,7 @@ void RackHttpServer::setupRoutes() {
                 rackApp->engine->addModule(m); moduleId = m->id;
                 rackApp->scene->rack->addModule(mw);
                 rackApp->scene->rack->setModulePosForce(mw, pos);
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             if (moduleId < 0) {
                 res.status = 400;
                 res.set_content(err(failReason.empty() ? "Failed to create module" : failReason), "application/json");
@@ -1463,7 +1474,7 @@ void RackHttpServer::setupRoutes() {
             if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             int64_t id = std::stoll(req.matches[1]);
             std::string body;
-            taskQueue->post([rackApp, id, &body]() {
+            if (!taskQueue->postSync([rackApp, id, &body]() {
                 if (!rackApp->engine) return;
                 engine::Module* mod = rackApp->engine->getModule(id);
                 if (!mod) { body = "null"; return; }
@@ -1472,7 +1483,7 @@ void RackHttpServer::setupRoutes() {
                     body += serializeParamQuantity(mod->paramQuantities[i], i) + (i < (int)mod->params.size() - 1 ? ", " : "");
                 }
                 body += "]";
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             if (body == "null") { res.status = 404; res.set_content(err("Module not found"), "application/json"); }
             else res.set_content(ok(body), "application/json");
         });
@@ -1482,7 +1493,7 @@ void RackHttpServer::setupRoutes() {
             int64_t id = std::stoll(req.matches[1]);
             const std::string requestBody = req.body;
             int applied = 0; bool found = false;
-            taskQueue->post([rackApp, id, requestBody, &applied, &found]() {
+            if (!taskQueue->postSync([rackApp, id, requestBody, &applied, &found]() {
                 engine::Module* mod = rackApp->engine->getModule(id);
                 if (!mod) return;
                 found = true;
@@ -1496,7 +1507,7 @@ void RackHttpServer::setupRoutes() {
                     if (paramId >= 0 && paramId < (int)mod->params.size()) { rackApp->engine->setParamValue(mod, paramId, (float)value); applied++; }
                     pos = end + 1;
                 }
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             if (!found) { res.status = 404; res.set_content(err("Module not found"), "application/json"); }
             else res.set_content(ok("{\"applied\":" + std::to_string(applied) + "}"), "application/json");
         });
@@ -1504,7 +1515,7 @@ void RackHttpServer::setupRoutes() {
         svr.Get("/cables", [rackApp, this](const httplib::Request&, httplib::Response& res) {
             if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             std::string body;
-            taskQueue->post([rackApp, &body]() {
+            if (!taskQueue->postSync([rackApp, &body]() {
                 if (!rackApp->engine) { body = "[]"; return; }
                 std::vector<int64_t> ids = rackApp->engine->getCableIds();
                 body = "[";
@@ -1518,7 +1529,7 @@ void RackHttpServer::setupRoutes() {
                     if (i < ids.size() - 1) body += ", ";
                 }
                 body += "]";
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             res.set_content(ok(body), "application/json");
         });
 
@@ -1528,7 +1539,7 @@ void RackHttpServer::setupRoutes() {
             int outP = (int)parseJsonDouble(req.body, "outputId", 0), inP = (int)parseJsonDouble(req.body, "inputId", 0);
             int64_t cableId = -1;
             
-            taskQueue->post([rackApp, outM, outP, inM, inP, &cableId]() {
+            if (!taskQueue->postSync([rackApp, outM, outP, inM, inP, &cableId]() {
                 if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 engine::Module* oMod = rackApp->engine->getModule(outM);
                 engine::Module* iMod = rackApp->engine->getModule(inM);
@@ -1558,7 +1569,7 @@ void RackHttpServer::setupRoutes() {
                 cw->outputPort = oPort;
                 cw->inputPort = iPort;
                 rackApp->scene->rack->addCable(cw);
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
 
             if (cableId < 0) { res.status = 404; res.set_content(err("Failed to connect: ports or modules not found"), "application/json"); }
             else res.set_content(ok("{\"id\":" + std::to_string(cableId) + "}"), "application/json");
@@ -1569,7 +1580,7 @@ void RackHttpServer::setupRoutes() {
             int64_t id = std::stoll(req.matches[1]);
             bool found = false;
 
-            taskQueue->post([rackApp, id, &found]() {
+            if (!taskQueue->postSync([rackApp, id, &found]() {
                 if (!rackApp->engine || !rackApp->scene || !rackApp->scene->rack) return;
                 app::CableWidget* cw = rackApp->scene->rack->getCable(id);
                 if (cw) {
@@ -1585,7 +1596,7 @@ void RackHttpServer::setupRoutes() {
                         delete c;
                     }
                 }
-            }).get();
+            })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
 
             if (!found) { res.status = 404; res.set_content(err("Cable not found"), "application/json"); }
             else res.set_content(ok("{\"removed\":true}"), "application/json");
@@ -1594,7 +1605,7 @@ void RackHttpServer::setupRoutes() {
         svr.Get("/sample-rate", [rackApp, this](const httplib::Request&, httplib::Response& res) {
             if (!rackApp || !rackApp->engine) { res.status = 503; res.set_content(err("Engine not available"), "application/json"); return; }
             float sr = 0.f;
-            taskQueue->post([rackApp, &sr]() { if (rackApp && rackApp->engine) sr = rackApp->engine->getSampleRate(); }).get();
+            if (!taskQueue->postSync([rackApp, &sr]() { if (rackApp && rackApp->engine) sr = rackApp->engine->getSampleRate(); })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             res.set_content(ok("{\"sampleRate\":" + std::to_string(sr) + "}"), "application/json");
         });
 

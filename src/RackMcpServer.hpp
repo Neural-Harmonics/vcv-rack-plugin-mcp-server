@@ -23,6 +23,8 @@ struct UITaskQueue {
     std::queue<Task> tasks;
 
     std::future<void> post(std::function<void()> fn, const std::string& label = "");
+    // Returns false if the UI thread did not execute the task within timeoutSecs.
+    bool postSync(std::function<void()> fn, const std::string& label = "", int timeoutSecs = 10);
     void drain();
 };
 
