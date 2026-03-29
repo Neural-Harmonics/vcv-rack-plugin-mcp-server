@@ -252,6 +252,8 @@ static double parseJsonDouble(const std::string& json, const std::string& key, d
     pos = json.find(':', pos + searchKey.size());
     if (pos == std::string::npos) return def;
     while (pos < json.size() && (json[pos] == ':' || json[pos] == ' ')) pos++;
+    // Handle quoted string numbers (AI sometimes sends numbers as JSON strings)
+    if (pos < json.size() && json[pos] == '"') pos++;
     try { return std::stod(json.substr(pos)); } catch (...) { return def; }
 }
 
@@ -424,8 +426,8 @@ static const char* MCP_TOOLS_JSON = R"json([
 {"name":"vcvrack_set_layout_preferences","description":"Set user matrix preferences anchored at the MCP module. matrix_cols_hp is width in HP (15 px/HP) from MCP x, matrix_rows is row count starting at MCP row. Set either to 0 for unbounded.","inputSchema":{"type":"object","properties":{"matrix_cols_hp":{"type":"integer","minimum":0},"matrix_rows":{"type":"integer","minimum":0}},"required":["matrix_cols_hp","matrix_rows"]}},
 {"name":"vcvrack_get_rack_layout","description":"Get a spatial map of the rack: all rows, their occupied x ranges, the MCP module position, current matrix_preferences, and ready-to-use suggested_positions for placing new modules. ALWAYS call this before vcvrack_add_module to get explicit x/y coordinates. Never rely on auto-placement.\n\nResponse fields:\n- grid_unit_px: 1 HP = 15 px (standard VCV Rack unit)\n- row_height_px: 380 px per row (one 3U row)\n- mcp_module: the MCP Server module's current x/y position. MCP is always the world anchor.\n- matrix_preferences: user-defined bounds relative to MCP anchor.\n- rows[]: each row has y (top of row), left_edge, right_edge (first free x in that row), module_count\n- suggested_positions[]: insertion points constrained by matrix_preferences. Prefer 'append_mcp_row' for modules that belong with the main MCP section, and prefer 'insert_before_output' when the row already ends with Audio Interface modules so outputs stay on the far right.\n\nBatching: when adding several modules to the same row, compute the next x yourself as: next_x = previous_x + width_returned_by_add. This avoids calling layout again between each add.","inputSchema":{"type":"object","properties":{}}},
 {"name":"vcvrack_list_modules","description":"List all modules currently loaded in the VCV Rack patch. Each entry includes id, plugin, slug, name, param/input/output counts, x position, y position, and width (in pixels). Use x + width to compute where the next module should go in the same row.","inputSchema":{"type":"object","properties":{}}},
-{"name":"vcvrack_get_module","description":"Get detailed information about a specific module: all parameters (with value ranges), inputs, and outputs.","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Module ID"}},"required":["id"]}},
-{"name":"vcvrack_add_module","description":"Add a new module to the VCV Rack patch at an explicit pixel position.\n\nMANDATORY PLACEMENT WORKFLOW — follow this every time:\n1. Call vcvrack_get_rack_layout to get mcp_module, rows, and suggested_positions.\n2. Use mcp_module as your spatial anchor to decide whether the module belongs on the MCP row, another existing row, or a new aligned row.\n3. Prefer 'append_mcp_row' for modules related to the main patch section. If the row already ends with Audio Interface modules, prefer 'insert_before_output' so Audio stays at the far right.\n4. Pass the chosen x and y values here. Both x and y are required.\n5. The response includes the new module's width. Store it: next_x = x + width for the following module in the same row.\n\nNever omit x/y. Never auto-place. Consistent explicit positioning keeps the rack readable.\n\nUse vcvrack_search_library to discover valid plugin/slug values before adding.","inputSchema":{"type":"object","properties":{"plugin":{"type":"string","description":"Plugin slug (e.g. 'Fundamental')"},"slug":{"type":"string","description":"Module slug (e.g. 'VCO-1')"},"x":{"type":"number","description":"X position in pixels — obtain from vcvrack_get_rack_layout suggested_positions, or compute as previous_x + previous_width"},"y":{"type":"number","description":"Y position in pixels — obtain from vcvrack_get_rack_layout suggested_positions (e.g. 0 for row 0, 380 for row 1)"}},"required":["plugin","slug","x","y"]}},
+{"name":"vcvrack_get_module","description":"Get detailed information about a specific module: all parameters (with value ranges), inputs, and outputs.","inputSchema":{"type":"object","properties":{"module_id":{"type":"integer","description":"Module ID"}},"required":["module_id"]}},
+{"name":"vcvrack_add_module","description":"Add a new module to the VCV Rack patch at an explicit pixel position.\n\nMANDATORY PLACEMENT WORKFLOW — follow this every time:\n1. Call vcvrack_get_rack_layout to get mcp_module, rows, and suggested_positions.\n2. Use mcp_module as your spatial anchor to decide whether the module belongs on the MCP row, another existing row, or a new aligned row.\n3. Prefer 'append_mcp_row' for modules related to the main patch section. If the row already ends with Audio Interface modules, prefer 'insert_before_output' so Audio stays at the far right.\n4. Pass the chosen x and y values here. Both x and y are required.\n5. The response includes the new module's width. Store it: next_x = x + width for the following module in the same row.\n\nNever omit x/y. Never auto-place. Consistent explicit positioning keeps the rack readable.\n\nUse vcvrack_search_library to discover valid plugin/slug values before adding.","inputSchema":{"type":"object","properties":{"plugin_slug":{"type":"string","description":"Plugin slug (e.g. 'Fundamental')"},"module_slug":{"type":"string","description":"Module slug (e.g. 'VCO-1')"},"x":{"type":"number","description":"X position in pixels — obtain from vcvrack_get_rack_layout suggested_positions, or compute as previous_x + previous_width"},"y":{"type":"number","description":"Y position in pixels — obtain from vcvrack_get_rack_layout suggested_positions (e.g. 0 for row 0, 380 for row 1)"}},"required":["plugin_slug","module_slug","x","y"]}},
 {"name":"vcvrack_delete_module","description":"Delete a module from the VCV Rack patch by ID.","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Module ID to delete"}},"required":["id"]}},
 {"name":"vcvrack_get_params","description":"Get all parameters of a module with names, value ranges, current raw values, display strings, and switch options when available. Use this before setting params because many Rack controls are normalized knob values rather than Hz or seconds.","inputSchema":{"type":"object","properties":{"moduleId":{"type":"integer","description":"Module ID"}},"required":["moduleId"]}},
 {"name":"vcvrack_set_params","description":"Set one or more parameters on a module. Always call vcvrack_get_params first to discover parameter IDs, min/max ranges, display strings, and switch options. Prefer small batches, keep values inside the reported min/max range, and re-read params after writing to confirm the change applied.","inputSchema":{"type":"object","properties":{"moduleId":{"type":"integer","description":"Module ID"},"params":{"type":"array","description":"Array of parameter updates","items":{"type":"object","properties":{"id":{"type":"integer","description":"Parameter index (0-based)"},"value":{"type":"number","description":"New parameter value"}},"required":["id","value"]}}},"required":["moduleId","params"]}},
@@ -434,7 +436,7 @@ static const char* MCP_TOOLS_JSON = R"json([
 {"name":"vcvrack_delete_cable","description":"Remove a cable connection by cable ID.","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Cable ID"}},"required":["id"]}},
 {"name":"vcvrack_get_sample_rate","description":"Get the current audio engine sample rate in Hz.","inputSchema":{"type":"object","properties":{}}},
 {"name":"vcvrack_search_library","description":"Search the installed plugin library for modules. Two modes:\n1. Single search: pass 'q' and/or 'tags'.\n2. Multi-search: pass 'queries' array to find VCO, VCF, VCA, ADSR, Audio etc. in ONE call. Each entry is keyed by its 'label' in the response. Always prefer multi-search when building a patch.","inputSchema":{"type":"object","properties":{"q":{"type":"string","description":"Search query matching slug, name, or description (single search)"},"tags":{"type":"string","description":"Tag filter e.g. 'VCO', 'VCF', 'LFO', 'Envelope', 'Mixer' (single search)"},"queries":{"type":"array","description":"Multi-search: array of independent queries returned grouped by label. Use to find all needed module types in one call.","items":{"type":"object","properties":{"label":{"type":"string","description":"Key for these results in the response e.g. 'vco', 'vca'"},"q":{"type":"string","description":"Search query"},"tags":{"type":"string","description":"Tag filter e.g. 'VCO', 'VCF'"}},"required":["label"]}}},"required":[]}},
-{"name":"vcvrack_get_plugin","description":"Get detailed information about an installed plugin and its full module list.","inputSchema":{"type":"object","properties":{"slug":{"type":"string","description":"Plugin slug"}},"required":["slug"]}}
+{"name":"vcvrack_get_plugin","description":"Get detailed information about an installed plugin and its full module list.","inputSchema":{"type":"object","properties":{"plugin_slug":{"type":"string","description":"Plugin slug"}},"required":["plugin_slug"]}}
 ])json";
 
 // ─── MCP prompts ────────────────────────────────────────────────────────────
@@ -876,8 +878,9 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
         }
 
         if (name == "vcvrack_get_module") {
-            std::string rawId = parseRawValue(args, "id");
-            int64_t id = rawId.empty() ? -1 : (int64_t)std::stod(rawId);
+            std::string rawId = parseRawValue(args, "module_id");
+            if (!rawId.empty() && rawId.front() == '"') rawId = rawId.substr(1, rawId.size() - 2);
+            int64_t id = rawId.empty() ? -1 : std::stoll(rawId);
             std::string body;
             taskQueue->post([rackApp, id, &body]() {
                 if (!rackApp || !rackApp->engine) return;
@@ -923,8 +926,8 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
         }
 
         if (name == "vcvrack_add_module") {
-            std::string pSlug = parseJsonString(args, "plugin");
-            std::string mSlug = parseJsonString(args, "slug");
+            std::string pSlug = parseJsonString(args, "plugin_slug");
+            std::string mSlug = parseJsonString(args, "module_slug");
             float x = (float)parseJsonDouble(args, "x", -1.0);
             float y = (float)parseJsonDouble(args, "y", -1.0);
             plugin::Model* model = nullptr;
@@ -1193,7 +1196,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
         }
 
         if (name == "vcvrack_get_plugin") {
-            std::string slug = parseJsonString(args, "slug");
+            std::string slug = parseJsonString(args, "plugin_slug");
             for (plugin::Plugin* p : rack::plugin::plugins)
                 if (p->slug == slug) return toolOk(serializePlugin(p));
             return toolFail("Plugin not found: " + slug);
