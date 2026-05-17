@@ -155,6 +155,9 @@ def test_add_inspect_remove(base):
     data = detail.get("data", {})
     check("detail.id matches",    data.get("id") == mod_id)
     check("detail.slug == VCO",   data.get("slug") == "VCO")
+    check("detail.width is numeric", isinstance(data.get("width"), (int, float)),
+          f"got {data.get('width')!r}")
+    check("detail.width > 0",     data.get("width", 0) > 0, f"got {data.get('width')}")
     check("detail has params",    len(data.get("params", [])) > 0)
     check("detail has outputs",   len(data.get("outputs", [])) > 0)
 

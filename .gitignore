@@ -24,6 +24,7 @@ __pycache__/
 # CMake
 CMakeUserPresets.json
 .memory
+tests/test_json_helpers
 
 # Local AI assistant config
 .claude/
