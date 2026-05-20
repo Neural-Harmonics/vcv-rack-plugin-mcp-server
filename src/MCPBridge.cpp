@@ -121,6 +121,13 @@ static std::string serializeModuleDetail(engine::Module* mod) {
         s += jsonKVs("name", mod->model->name);
     }
 
+    app::ModuleWidget* mw = APP->scene->rack->getModule(mod->id);
+    if (mw) {
+        s += jsonKV("x", std::to_string(mw->box.pos.x));
+        s += jsonKV("y", std::to_string(mw->box.pos.y));
+        s += jsonKV("width", std::to_string(mw->box.size.x));
+    }
+
     // Params
     s += jsonStr("params") + ": [";
     for (int i = 0; i < (int)mod->params.size(); i++) {
