@@ -181,17 +181,41 @@ target_compile_definitions(VCVRackMcpServer PRIVATE
 )
 
 if(APPLE)
+  # Plugins MUST link to libRack so that Rack's symbols are available when Rack
+  # itself runs as a plugin (AU/VST3) inside a DAW.  In that context Rack's own
+  # symbols are NOT exported into the flat namespace, so relying solely on
+  # -undefined dynamic_lookup causes "symbol not found" errors at load time.
+  # See: https://github.com/VCVRack/Rack/blob/v2/plugin.mk
+  target_link_libraries(VCVRackMcpServer PRIVATE ${RACK_LIB})
   target_link_options(VCVRackMcpServer PRIVATE
-    -undefined dynamic_lookup   # Rack symbols resolved at load time by Rack
+    -undefined dynamic_lookup   # catch any remaining undefined symbols
     -Wl,-install_name,@rpath/plugin.dylib
   )
-elseif(UNIX)
-  target_link_options(VCVRackMcpServer PRIVATE
-    -Wl,--allow-shlib-undefined  # same — Rack resolves symbols at load time
+  # The Rack SDK ships libRack.dylib with an install name of "libRack.dylib".
+  # At startup Rack creates a symlink /tmp/Rack2 → <rack-system-dir> so that
+  # plugins can locate the library at runtime.  Patch the reference accordingly.
+  add_custom_command(TARGET VCVRackMcpServer POST_BUILD
+    COMMAND install_name_tool
+      -change libRack.dylib /tmp/Rack2/libRack.dylib
+      "$<TARGET_FILE:VCVRackMcpServer>"
+    COMMENT "Patching libRack.dylib install name → /tmp/Rack2/libRack.dylib"
   )
-  target_link_libraries(VCVRackMcpServer PRIVATE pthread)
+elseif(UNIX)
+  # Same reasoning as macOS: link explicitly so the symbol table is populated
+  # when Rack runs as a VST3/LV2 plugin inside a DAW.
+  target_link_libraries(VCVRackMcpServer PRIVATE ${RACK_LIB} pthread)
+  target_link_options(VCVRackMcpServer PRIVATE
+    -Wl,--allow-shlib-undefined  # keep for any remaining undefined symbols
+    -Wl,-rpath=/tmp/Rack2        # Rack symlinks its system dir here at startup
+  )
 elseif(WIN32)
   target_link_libraries(VCVRackMcpServer PRIVATE ws2_32 mswsock)
+  # Windows: link the Rack import library if the SDK provides one.
+  if(EXISTS "${RACK_DIR}/Rack.lib")
+    target_link_libraries(VCVRackMcpServer PRIVATE "${RACK_DIR}/Rack.lib")
+  elseif(EXISTS "${RACK_DIR}/libRack.dll.a")
+    target_link_libraries(VCVRackMcpServer PRIVATE "${RACK_DIR}/libRack.dll.a")
+  endif()
 endif()
 
 # ── Install target ────────────────────────────────────────────────────────────
