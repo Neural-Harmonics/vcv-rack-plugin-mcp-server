@@ -168,7 +168,7 @@ target_compile_options(VCVRackMcpServer PRIVATE
 
 # Platform-specific optimization flags
 if(RACK_ARCH STREQUAL "lin-x64" OR RACK_ARCH STREQUAL "win-x64")
-  target_compile_options(VCVRackMcpServer PRIVATE -march=nocona)  # SSE4.2 baseline for x64
+  target_compile_options(VCVRackMcpServer PRIVATE -march=nehalem)  # Rack 2 x64 standard (SSE4.2 + SSSE3, required by bundled simde)
 elseif(RACK_ARCH STREQUAL "mac-x64")
   target_compile_options(VCVRackMcpServer PRIVATE -march=nehalem)  # SSE4.2 for Intel Mac
 endif()
@@ -178,6 +178,7 @@ endif()
 string(REPLACE "-" "_" RACK_ARCH_MACRO "${RACK_ARCH}")
 target_compile_definitions(VCVRackMcpServer PRIVATE
   ARCH_${RACK_ARCH_MACRO}   # lets source code #ifdef on arch if needed
+  _USE_MATH_DEFINES         # MinGW <cmath> hides M_PI/M_SQRT2 under strict -std=c++17 without this
 )
 
 if(APPLE)
@@ -210,6 +211,18 @@ elseif(UNIX)
   )
 elseif(WIN32)
   target_link_libraries(VCVRackMcpServer PRIVATE ws2_32 mswsock)
+  # Statically link the MinGW C++ runtime. Rack's install dir is on the DLL search
+  # path and ships OLDER libstdc++-6/libgcc/libwinpthread DLLs; a plugin built with a
+  # newer toolchain that imports those dynamically fails to load (error 127 — proc not
+  # found). Static linking removes the dependency entirely. (Matches Rack's plugin.mk.)
+  #
+  # Use the full -static driver flag: it links libgcc, libstdc++ AND libwinpthread
+  # statically in one shot. The targeted -static-libgcc/-static-libstdc++ +
+  # -Wl,-Bstatic -lwinpthread approach leaks libwinpthread-1.dll, because the
+  # implicit libstdc++ re-pulls pthread symbols under the trailing -Bdynamic.
+  # System DLLs (kernel32, msvcrt, ws2_32, libRack import lib) stay dynamic —
+  # MinGW links those normally regardless of -static.
+  target_link_options(VCVRackMcpServer PRIVATE -static)
   # Windows: link the Rack import library if the SDK provides one.
   if(EXISTS "${RACK_DIR}/Rack.lib")
     target_link_libraries(VCVRackMcpServer PRIVATE "${RACK_DIR}/Rack.lib")
@@ -223,10 +236,15 @@ endif()
 if(APPLE)
   set(RACK_PLUGINS_DIR "$ENV{HOME}/Library/Application Support/Rack2/plugins-${RACK_ARCH}")
 elseif(WIN32)
-  set(RACK_PLUGINS_DIR "$ENV{APPDATA}/Rack2/plugins")
+  # Rack 2 reads user plugins from %LOCALAPPDATA%\Rack2\plugins-<arch> (NOT %APPDATA%/Roaming).
+  set(RACK_PLUGINS_DIR "$ENV{LOCALAPPDATA}/Rack2/plugins-${RACK_ARCH}")
 else()
   set(RACK_PLUGINS_DIR "$ENV{HOME}/.Rack2/plugins")
 endif()
+
+# Normalize to forward slashes — Windows env paths (e.g. %APPDATA%) contain backslashes
+# that install() DESTINATION misreads as escapes (e.g. "\Users" -> invalid '\U').
+file(TO_CMAKE_PATH "${RACK_PLUGINS_DIR}" RACK_PLUGINS_DIR)
 
 set(PLUGIN_INSTALL_DIR ${RACK_PLUGINS_DIR}/VCVRackMcpServer)
 
