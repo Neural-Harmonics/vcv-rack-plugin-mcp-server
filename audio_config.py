@@ -48,7 +48,7 @@ if not audio_id:
 
 # 3. Clean up other modules to start fresh
 for m in modules:
-    if m["id"] != audio_id and m["slug"] != "RackMcpServer":
+    if m["id"] != audio_id and m["slug"] != "McpServer":
         print(f"Deleting module {m['slug']} (ID: {m['id']})")
         try:
             delete_module(m["id"])

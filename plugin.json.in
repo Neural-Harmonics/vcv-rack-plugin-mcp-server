@@ -1,5 +1,5 @@
 {
-  "slug": "VCVRackMcpServer",
+  "slug": "NeuralHarmonicsMcpServer",
   "name": "MCP Server",
   "version": "@PROJECT_VERSION@",
   "license": "MIT",
@@ -15,7 +15,7 @@
   "minRackVersion": "2.0.0",
   "modules": [
     {
-      "slug": "RackMcpServer",
+      "slug": "McpServer",
       "name": "MCP Server",
       "description": "Embedded HTTP server exposing VCV Rack internals to AI clients (Claude, Cursor, etc.) via the Model Context Protocol. Enables AI to build patches, add modules, connect cables, and tweak parameters.",
       "tags": ["Utility", "External"]

@@ -21,7 +21,7 @@
 BUILD_DIR ?= build
 
 # Read slug + version from plugin.json (requires jq; fallback to literals)
-SLUG    := $(shell jq -r '.slug'    plugin.json 2>/dev/null || echo VCVRackMcpServer)
+SLUG    := $(shell jq -r '.slug'    plugin.json 2>/dev/null || echo NeuralHarmonicsMcpServer)
 VERSION := $(shell jq -r '.version' plugin.json 2>/dev/null || echo 2.0.0)
 
 # Detect host OS and derive the plugin binary name + dist platform tag

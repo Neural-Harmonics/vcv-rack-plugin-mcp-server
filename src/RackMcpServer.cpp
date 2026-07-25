@@ -1873,7 +1873,7 @@ struct MatrixEditItem : MenuItem {
 
 RackMcpServerWidget::RackMcpServerWidget(RackMcpServer* module) {
         setModule(module);
-        setPanel(createPanel(asset::plugin(pluginInstance, "res/RackMcpServer.svg")));
+        setPanel(createPanel(asset::plugin(pluginInstance, "res/McpServer.svg")));
 
         // Corner screws
         addChild(createWidget<ScrewSilver>(Vec(RACK_GRID_WIDTH, 0)));
@@ -1973,4 +1973,4 @@ void RackMcpServerWidget::appendContextMenu(Menu* menu) {
 
 }
 
-Model* modelRackMcpServer = createModel<RackMcpServer, RackMcpServerWidget>("RackMcpServer");
+Model* modelRackMcpServer = createModel<RackMcpServer, RackMcpServerWidget>("McpServer");

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(VCVRackMcpServer VERSION 2.1.1 LANGUAGES CXX)
+project(NeuralHarmonicsMcpServer VERSION 2.1.1 LANGUAGES CXX)
 # NOTE: The major version MUST be 2 — VCV Rack 2 rejects plugins whose
 # version does not start with "2." (ABI compatibility check).
 # Use minor.patch for your own versioning: 2.<minor>.<patch>
@@ -140,25 +140,25 @@ if(NOT EXISTS ${RACK_INCLUDE_DIR}/rack.hpp)
 endif()
 
 # ── Plugin shared library ─────────────────────────────────────────────────────
-add_library(VCVRackMcpServer MODULE
+add_library(NeuralHarmonicsMcpServer MODULE
   src/plugin.cpp
   src/RackMcpServer.cpp
 )
 
-set_target_properties(VCVRackMcpServer PROPERTIES
+set_target_properties(NeuralHarmonicsMcpServer PROPERTIES
   PREFIX   ""
   SUFFIX   ${PLUGIN_EXT}
   OUTPUT_NAME "plugin"
 )
 
-target_include_directories(VCVRackMcpServer PRIVATE
+target_include_directories(NeuralHarmonicsMcpServer PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
   ${RACK_INCLUDE_DIR}
   ${RACK_DEP_DIR}
   ${HTTPLIB_INCLUDE_DIR}
 )
 
-target_compile_options(VCVRackMcpServer PRIVATE
+target_compile_options(NeuralHarmonicsMcpServer PRIVATE
   -fPIC
   -O3
   -funsafe-math-optimizations
@@ -168,15 +168,15 @@ target_compile_options(VCVRackMcpServer PRIVATE
 
 # Platform-specific optimization flags
 if(RACK_ARCH STREQUAL "lin-x64" OR RACK_ARCH STREQUAL "win-x64")
-  target_compile_options(VCVRackMcpServer PRIVATE -march=nehalem)  # Rack 2 x64 standard (SSE4.2 + SSSE3, required by bundled simde)
+  target_compile_options(NeuralHarmonicsMcpServer PRIVATE -march=nehalem)  # Rack 2 x64 standard (SSE4.2 + SSSE3, required by bundled simde)
 elseif(RACK_ARCH STREQUAL "mac-x64")
-  target_compile_options(VCVRackMcpServer PRIVATE -march=nehalem)  # SSE4.2 for Intel Mac
+  target_compile_options(NeuralHarmonicsMcpServer PRIVATE -march=nehalem)  # SSE4.2 for Intel Mac
 endif()
 # mac-arm64 doesn't need -march flag
 
 # Define platform macro (replace hyphens with underscores for valid C++ identifiers)
 string(REPLACE "-" "_" RACK_ARCH_MACRO "${RACK_ARCH}")
-target_compile_definitions(VCVRackMcpServer PRIVATE
+target_compile_definitions(NeuralHarmonicsMcpServer PRIVATE
   ARCH_${RACK_ARCH_MACRO}   # lets source code #ifdef on arch if needed
   _USE_MATH_DEFINES         # MinGW <cmath> hides M_PI/M_SQRT2 under strict -std=c++17 without this
 )
@@ -187,30 +187,30 @@ if(APPLE)
   # symbols are NOT exported into the flat namespace, so relying solely on
   # -undefined dynamic_lookup causes "symbol not found" errors at load time.
   # See: https://github.com/VCVRack/Rack/blob/v2/plugin.mk
-  target_link_libraries(VCVRackMcpServer PRIVATE ${RACK_LIB})
-  target_link_options(VCVRackMcpServer PRIVATE
+  target_link_libraries(NeuralHarmonicsMcpServer PRIVATE ${RACK_LIB})
+  target_link_options(NeuralHarmonicsMcpServer PRIVATE
     -undefined dynamic_lookup   # catch any remaining undefined symbols
     -Wl,-install_name,@rpath/plugin.dylib
   )
   # The Rack SDK ships libRack.dylib with an install name of "libRack.dylib".
   # At startup Rack creates a symlink /tmp/Rack2 → <rack-system-dir> so that
   # plugins can locate the library at runtime.  Patch the reference accordingly.
-  add_custom_command(TARGET VCVRackMcpServer POST_BUILD
+  add_custom_command(TARGET NeuralHarmonicsMcpServer POST_BUILD
     COMMAND install_name_tool
       -change libRack.dylib /tmp/Rack2/libRack.dylib
-      "$<TARGET_FILE:VCVRackMcpServer>"
+      "$<TARGET_FILE:NeuralHarmonicsMcpServer>"
     COMMENT "Patching libRack.dylib install name → /tmp/Rack2/libRack.dylib"
   )
 elseif(UNIX)
   # Same reasoning as macOS: link explicitly so the symbol table is populated
   # when Rack runs as a VST3/LV2 plugin inside a DAW.
-  target_link_libraries(VCVRackMcpServer PRIVATE ${RACK_LIB} pthread)
-  target_link_options(VCVRackMcpServer PRIVATE
+  target_link_libraries(NeuralHarmonicsMcpServer PRIVATE ${RACK_LIB} pthread)
+  target_link_options(NeuralHarmonicsMcpServer PRIVATE
     -Wl,--allow-shlib-undefined  # keep for any remaining undefined symbols
     -Wl,-rpath=/tmp/Rack2        # Rack symlinks its system dir here at startup
   )
 elseif(WIN32)
-  target_link_libraries(VCVRackMcpServer PRIVATE ws2_32 mswsock)
+  target_link_libraries(NeuralHarmonicsMcpServer PRIVATE ws2_32 mswsock)
   # Statically link the MinGW C++ runtime. Rack's install dir is on the DLL search
   # path and ships OLDER libstdc++-6/libgcc/libwinpthread DLLs; a plugin built with a
   # newer toolchain that imports those dynamically fails to load (error 127 — proc not
@@ -222,12 +222,12 @@ elseif(WIN32)
   # implicit libstdc++ re-pulls pthread symbols under the trailing -Bdynamic.
   # System DLLs (kernel32, msvcrt, ws2_32, libRack import lib) stay dynamic —
   # MinGW links those normally regardless of -static.
-  target_link_options(VCVRackMcpServer PRIVATE -static)
+  target_link_options(NeuralHarmonicsMcpServer PRIVATE -static)
   # Windows: link the Rack import library if the SDK provides one.
   if(EXISTS "${RACK_DIR}/Rack.lib")
-    target_link_libraries(VCVRackMcpServer PRIVATE "${RACK_DIR}/Rack.lib")
+    target_link_libraries(NeuralHarmonicsMcpServer PRIVATE "${RACK_DIR}/Rack.lib")
   elseif(EXISTS "${RACK_DIR}/libRack.dll.a")
-    target_link_libraries(VCVRackMcpServer PRIVATE "${RACK_DIR}/libRack.dll.a")
+    target_link_libraries(NeuralHarmonicsMcpServer PRIVATE "${RACK_DIR}/libRack.dll.a")
   endif()
 endif()
 
@@ -246,9 +246,9 @@ endif()
 # that install() DESTINATION misreads as escapes (e.g. "\Users" -> invalid '\U').
 file(TO_CMAKE_PATH "${RACK_PLUGINS_DIR}" RACK_PLUGINS_DIR)
 
-set(PLUGIN_INSTALL_DIR ${RACK_PLUGINS_DIR}/VCVRackMcpServer)
+set(PLUGIN_INSTALL_DIR ${RACK_PLUGINS_DIR}/NeuralHarmonicsMcpServer)
 
-install(TARGETS VCVRackMcpServer
+install(TARGETS NeuralHarmonicsMcpServer
   LIBRARY DESTINATION ${PLUGIN_INSTALL_DIR}
 )
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/plugin.json
@@ -270,12 +270,12 @@ add_custom_target(dist
   COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/package"
   COMMAND ${CMAKE_COMMAND} -E rm -rf "${PACKAGE_ROOT_DIR}"
   COMMAND ${CMAKE_COMMAND} -E make_directory "${PACKAGE_ROOT_DIR}"
-  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:VCVRackMcpServer>" "${PACKAGE_ROOT_DIR}/plugin${PLUGIN_EXT}"
+  COMMAND ${CMAKE_COMMAND} -E copy "$<TARGET_FILE:NeuralHarmonicsMcpServer>" "${PACKAGE_ROOT_DIR}/plugin${PLUGIN_EXT}"
   COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/plugin.json" "${PACKAGE_ROOT_DIR}/plugin.json"
   COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/res" "${PACKAGE_ROOT_DIR}/res"
   COMMAND ${CMAKE_COMMAND} -E make_directory "${DIST_DIR}"
   COMMAND ${CMAKE_COMMAND} -E chdir "${CMAKE_BINARY_DIR}/package" ${CMAKE_COMMAND} -E tar "cf" "${DIST_ARCHIVE_PATH}" --format=zip "${PROJECT_NAME}"
-  DEPENDS VCVRackMcpServer
+  DEPENDS NeuralHarmonicsMcpServer
   COMMENT "Packaging ${DIST_ARCHIVE_PATH}"
 )
 
