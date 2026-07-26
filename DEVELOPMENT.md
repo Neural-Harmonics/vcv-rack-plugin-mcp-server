@@ -1,6 +1,6 @@
 # Local Development Guide
 
-Everything you need to build, run, and test `vcv-rack-mcp-server` locally
+Everything you need to build, run, and test the Neural Harmonics VCV Rack Plugin locally
 without touching GitHub Actions.
 
 ---

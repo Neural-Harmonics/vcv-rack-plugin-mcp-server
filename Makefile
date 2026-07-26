@@ -1,5 +1,5 @@
 # =============================================================================
-# vcv-rack-mcp-server — VCV Rack 2 Plugin
+# Neural Harmonics VCV Rack Plugin
 # Makefile: thin CMake wrapper
 #
 # All heavy lifting (Rack SDK download, cpp-httplib download, cross-compile

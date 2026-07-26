@@ -42,9 +42,9 @@ cat > "$STAGE/manifest.json" << EOF
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server"
+    "url": "https://github.com/Neural-Harmonics/vcv-rack-plugin"
   },
-  "documentation": "https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server/blob/main/README.md",
+  "documentation": "https://github.com/Neural-Harmonics/vcv-rack-plugin/blob/main/README.md",
   "icon": "icon.png",
   "server": {
     "type": "python",

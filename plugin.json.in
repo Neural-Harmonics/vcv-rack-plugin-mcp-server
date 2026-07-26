@@ -7,11 +7,11 @@
   "author": "Claudio Bisegni",
   "authorEmail": "",
   "authorUrl": "https://github.com/Neural-Harmonics",
-  "pluginUrl": "https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server",
-  "manualUrl": "https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server/blob/main/README.md",
-  "sourceUrl": "https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server",
+  "pluginUrl": "https://github.com/Neural-Harmonics/vcv-rack-plugin",
+  "manualUrl": "https://github.com/Neural-Harmonics/vcv-rack-plugin/blob/main/README.md",
+  "sourceUrl": "https://github.com/Neural-Harmonics/vcv-rack-plugin",
   "donateUrl": "",
-  "changelogUrl": "https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server/blob/main/CHANGELOG.md",
+  "changelogUrl": "https://github.com/Neural-Harmonics/vcv-rack-plugin/blob/main/CHANGELOG.md",
   "minRackVersion": "2.0.0",
   "modules": [
     {

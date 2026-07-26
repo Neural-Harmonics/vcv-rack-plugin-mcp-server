@@ -263,9 +263,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: vcv-rack-plugin-mcp-server ${{ github.ref_name }}
+          name: Neural Harmonics VCV Rack Plugin ${{ github.ref_name }}
           body: |
-            ## vcv-rack-plugin-mcp-server ${{ github.ref_name }}
+            ## Neural Harmonics VCV Rack Plugin ${{ github.ref_name }}
 
             VCV Rack 2 plugin: exposes Rack internals to AI clients (Claude, Cursor, etc.) via HTTP/MCP.
 

@@ -5,7 +5,7 @@ project(NeuralHarmonics VERSION 2.1.1 LANGUAGES CXX)
 # Use minor.patch for your own versioning: 2.<minor>.<patch>
 
 # =============================================================================
-# vcv-rack-mcp-server — VCV Rack 2 Plugin  (CMake build)
+# Neural Harmonics VCV Rack Plugin  (CMake build)
 #
 # USAGE:
 #   cmake -B build
@@ -280,7 +280,7 @@ add_custom_target(dist
 )
 
 # ── Summary ───────────────────────────────────────────────────────────────────
-message(STATUS "vcv-rack-mcp-server plugin configured.")
+message(STATUS "Neural Harmonics VCV Rack Plugin configured.")
 message(STATUS "  Platform : ${RACK_ARCH}")
 message(STATUS "  Rack SDK : ${RACK_DIR}")
 message(STATUS "  Build    : cmake --build <build_dir>")

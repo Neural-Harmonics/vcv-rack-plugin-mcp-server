@@ -1,8 +1,8 @@
-# vcv-rack-mcp-server
+# Neural Harmonics VCV Rack Plugin
 
 ![VCV Rack MCP Server patch demo](docs/demo-1.png)
 
-`vcv-rack-mcp-server` lets AI clients control a live VCV Rack 2 patch through a dedicated Rack module that exposes both HTTP and MCP endpoints. The screenshot above shows the `MCP Server` module running alongside a simple ambient drone patch created through the server and saved back to Rack.
+The Neural Harmonics VCV Rack Plugin lets AI clients control a live VCV Rack 2 patch through a dedicated Rack module that exposes both HTTP and MCP endpoints. The screenshot above shows the `MCP Server` module running alongside a simple ambient drone patch created through the server and saved back to Rack.
 
 Connect AI clients to VCV Rack 2 through a module that exposes Rack over HTTP and MCP.
 With the `MCP Server` module loaded in a patch, an MCP client can inspect the patch, add modules, connect cables, set parameters, and save or load `.vcv` files.
@@ -59,7 +59,7 @@ Once the plugin is approved in the VCV Library:
 
 ### From GitHub Releases
 
-1. Open the [GitHub Releases](https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server/releases) page.
+1. Open the [GitHub Releases](https://github.com/Neural-Harmonics/vcv-rack-plugin/releases) page.
 2. Download the `.zip` file for your platform.
 3. Unzip it. You should get a folder named `NeuralHarmonics`.
 4. Move that folder into your Rack 2 plugins folder:
@@ -374,7 +374,7 @@ For an open-source plugin, the normal path is through the [`VCVRack/library`](ht
 
 1. Open an issue in `VCVRack/library`.
 2. Use the plugin slug as the issue title: `NeuralHarmonics`.
-3. Include the source repository URL: `https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server`.
+3. Include the source repository URL: `https://github.com/Neural-Harmonics/vcv-rack-plugin`.
 4. Wait for the maintainer to review and add the plugin.
 5. For later updates, comment on the same issue with the new version and commit SHA.
 
