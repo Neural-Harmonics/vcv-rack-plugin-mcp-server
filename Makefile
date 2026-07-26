@@ -50,7 +50,7 @@ else
 endif
 
 # ── Phony targets ─────────────────────────────────────────────────────────────
-.PHONY: all dep install dist clean test test-unit test-integration
+.PHONY: all dep install dist clean cleandep test test-unit test-integration
 
 # ── Configure (also triggers dep downloads) ───────────────────────────────────
 $(BUILD_DIR)/CMakeCache.txt: CMakeLists.txt plugin.json
@@ -93,3 +93,8 @@ test: test-unit
 # ── Clean ─────────────────────────────────────────────────────────────────────
 clean:
 	rm -rf $(BUILD_DIR) dist tests/test_json_helpers
+
+# Rack plugin toolchain compatibility target.
+# The standard workflow invokes `make clean` then `make cleandep`.
+cleandep:
+	rm -rf dep $(BUILD_DIR)/_deps
