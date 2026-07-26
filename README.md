@@ -53,7 +53,7 @@ Once the plugin is approved in the VCV Library:
 
 1. Open VCV Rack 2.
 2. Sign in to your VCV account.
-3. Open the Library and subscribe to `MCP Server` by `Neural Harmonics`.
+3. Open the Library and subscribe to `Neural Harmonics`.
 4. Restart Rack if needed.
 5. Add the module from the browser under `Utility`.
 
@@ -61,7 +61,7 @@ Once the plugin is approved in the VCV Library:
 
 1. Open the [GitHub Releases](https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server/releases) page.
 2. Download the `.zip` file for your platform.
-3. Unzip it. You should get a folder named `NeuralHarmonicsMcpServer`.
+3. Unzip it. You should get a folder named `NeuralHarmonics`.
 4. Move that folder into your Rack 2 plugins folder:
 
 ```text
@@ -83,10 +83,10 @@ make dist
 This creates a `.zip` archive in `dist/`, for example:
 
 ```text
-dist/NeuralHarmonicsMcpServer-2.1.0-mac-arm64.zip
+dist/NeuralHarmonics-2.1.1-mac-arm64.zip
 ```
 
-Unzip that file and move the extracted `NeuralHarmonicsMcpServer` folder into your Rack plugins directory.
+Unzip that file and move the extracted `NeuralHarmonics` folder into your Rack plugins directory.
 
 ## Quick start in Rack
 
@@ -373,7 +373,7 @@ git push origin v2.1.0
 For an open-source plugin, the normal path is through the [`VCVRack/library`](https://github.com/VCVRack/library) repository.
 
 1. Open an issue in `VCVRack/library`.
-2. Use the plugin slug as the issue title: `NeuralHarmonicsMcpServer`.
+2. Use the plugin slug as the issue title: `NeuralHarmonics`.
 3. Include the source repository URL: `https://github.com/Neural-Harmonics/vcv-rack-plugin-mcp-server`.
 4. Wait for the maintainer to review and add the plugin.
 5. For later updates, comment on the same issue with the new version and commit SHA.

@@ -100,7 +100,7 @@ tail -f ~/Documents/Rack2/log.txt
 A successful load looks like:
 
 ```
-[INFO  src/plugin/Plugin.cpp:76] Loaded plugin NeuralHarmonicsMcpServer
+[INFO  src/plugin/Plugin.cpp:76] Loaded plugin NeuralHarmonics
 [INFO  ...] [RackMcpServer] HTTP server starting on port 2600
 ```
 

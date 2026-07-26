@@ -1,6 +1,6 @@
 {
-  "slug": "NeuralHarmonicsMcpServer",
-  "name": "MCP Server",
+  "slug": "NeuralHarmonics",
+  "name": "Neural Harmonics",
   "version": "@PROJECT_VERSION@",
   "license": "MIT",
   "brand": "Neural Harmonics",

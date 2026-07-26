@@ -68,15 +68,15 @@ jobs:
 
       - name: Stage build output
         run: |
-          mkdir -p _stage/NeuralHarmonicsMcpServer/res
-          cp build/plugin.so _stage/NeuralHarmonicsMcpServer/
-          cp build/plugin.json _stage/NeuralHarmonicsMcpServer/plugin.json
-          cp -R res/. _stage/NeuralHarmonicsMcpServer/res/
+          mkdir -p _stage/NeuralHarmonics/res
+          cp build/plugin.so _stage/NeuralHarmonics/
+          cp build/plugin.json _stage/NeuralHarmonics/plugin.json
+          cp -R res/. _stage/NeuralHarmonics/res/
 
       - uses: actions/upload-artifact@v4
         with:
           name: stage-lin-x64
-          path: _stage/NeuralHarmonicsMcpServer
+          path: _stage/NeuralHarmonics
 
 # =============================================================================
 # Job 3 — Build macOS x64 and ARM64 (native runners, CMake)
@@ -120,15 +120,15 @@ jobs:
 
       - name: Stage build output
         run: |
-          mkdir -p _stage/NeuralHarmonicsMcpServer/res
-          cp build/plugin.dylib _stage/NeuralHarmonicsMcpServer/
-          cp build/plugin.json _stage/NeuralHarmonicsMcpServer/plugin.json
-          cp -R res/. _stage/NeuralHarmonicsMcpServer/res/
+          mkdir -p _stage/NeuralHarmonics/res
+          cp build/plugin.dylib _stage/NeuralHarmonics/
+          cp build/plugin.json _stage/NeuralHarmonics/plugin.json
+          cp -R res/. _stage/NeuralHarmonics/res/
 
       - uses: actions/upload-artifact@v4
         with:
           name: stage-mac-${{ matrix.arch }}
-          path: _stage/NeuralHarmonicsMcpServer
+          path: _stage/NeuralHarmonics
 
 # =============================================================================
 # Job 4 — Collect distributables after all builds succeed
@@ -157,9 +157,9 @@ jobs:
             platform="${artifact_name#stage-}"
             out_file="_release/${slug}-${version}-${platform}.zip"
 
-            if [ -d "$artifact_dir/NeuralHarmonicsMcpServer" ]; then
+            if [ -d "$artifact_dir/NeuralHarmonics" ]; then
               zip_root="$artifact_dir"
-              zip_entry="NeuralHarmonicsMcpServer"
+              zip_entry="NeuralHarmonics"
             elif [ -f "$artifact_dir/plugin.json" ]; then
               zip_root="$(dirname "$artifact_dir")"
               zip_entry="$(basename "$artifact_dir")"
@@ -273,16 +273,16 @@ jobs:
             1. Download the `.zip` that matches your Mac:
                - `*-mac-arm64.zip` for Apple Silicon
                - `*-mac-x64.zip` for Intel
-            2. Unzip it. This creates a `NeuralHarmonicsMcpServer` folder.
-            3. Move `NeuralHarmonicsMcpServer` into:
+            2. Unzip it. This creates a `NeuralHarmonics` folder.
+            3. Move `NeuralHarmonics` into:
                - `~/Library/Application Support/Rack2/plugins-mac-arm64/` on Apple Silicon
                - `~/Library/Application Support/Rack2/plugins-mac-x64/` on Intel Macs
             4. Restart VCV Rack.
 
             ### Install on Linux
             1. Download `*-lin-x64.zip`.
-            2. Unzip it. This creates a `NeuralHarmonicsMcpServer` folder.
-            3. Move `NeuralHarmonicsMcpServer` into `~/.local/share/Rack2/plugins-lin-x64/`.
+            2. Unzip it. This creates a `NeuralHarmonics` folder.
+            3. Move `NeuralHarmonics` into `~/.local/share/Rack2/plugins-lin-x64/`.
             4. Restart VCV Rack and add the `MCP Server` module from the module browser.
 
             ### What's new
