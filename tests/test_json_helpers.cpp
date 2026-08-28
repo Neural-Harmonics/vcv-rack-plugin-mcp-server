@@ -69,6 +69,20 @@ static double parseJsonDouble(const std::string& json, const std::string& key, d
     catch (...) { return def; }
 }
 
+// ponytail: undoes only the escapes jsonStr() produces (plus \/); no \uXXXX.
+static std::string jsonUnescape(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            char n = s[++i];
+            out += (n == 'n') ? '\n' : (n == 'r') ? '\r' : (n == 't') ? '\t' : n;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
 // ─── Minimal test framework ──────────────────────────────────────────────────
 
 static int pass_count = 0;
@@ -153,6 +167,17 @@ void test_parseJsonDouble() {
     CHECK("empty → default",     parseJsonDouble("", "x", -1.0) == -1.0);
 }
 
+void test_jsonUnescape() {
+    printf("\njsonUnescape()\n");
+    CHECK("windows path",     jsonUnescape("C:\\\\Users\\\\Arikl\\\\x.vcv") == "C:\\Users\\Arikl\\x.vcv");
+    CHECK("forward slashes",  jsonUnescape("C:\\/Users\\/x.vcv") == "C:/Users/x.vcv");
+    CHECK("plain untouched",  jsonUnescape("C:/Users/x.vcv") == "C:/Users/x.vcv");
+    CHECK("newline + quote",  jsonUnescape("a\\nb\\\"c") == "a\nb\"c");
+    std::string p = "C:\\Users\\my patch.vcv";
+    std::string quoted = jsonStr(p);
+    CHECK("round-trips jsonStr", jsonUnescape(quoted.substr(1, quoted.size() - 2)) == p);
+}
+
 void test_round_trip_ok() {
     printf("\nRound-trip: ok() response parsing\n");
     // Build a typical /status response body and verify it round-trips through
@@ -184,6 +209,7 @@ int main() {
     test_err_wrapper();
     test_parseJsonString();
     test_parseJsonDouble();
+    test_jsonUnescape();
     test_round_trip_ok();
 
     printf("\n%s\n", std::string(50, '-').c_str());

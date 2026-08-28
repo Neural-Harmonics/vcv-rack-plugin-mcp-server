@@ -88,6 +88,20 @@ static std::string jsonStr(const std::string& s) {
     return out + "\"";
 }
 
+// ponytail: undoes only the escapes jsonStr() produces (plus \/); no \uXXXX.
+static std::string jsonUnescape(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            char n = s[++i];
+            out += (n == 'n') ? '\n' : (n == 'r') ? '\r' : (n == 't') ? '\t' : n;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
 static std::string jsonKV(const std::string& k, const std::string& v, bool last = false) {
     return jsonStr(k) + ": " + v + (last ? "" : ", ");
 }
