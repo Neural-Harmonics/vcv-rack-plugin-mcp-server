@@ -13,6 +13,9 @@
 #include <rack.hpp>
 #include <app/RackWidget.hpp>
 #include <app/ModuleWidget.hpp>
+#include <ui/Menu.hpp>
+#include <ui/MenuItem.hpp>
+#include <ui/MenuOverlay.hpp>
 #include <tag.hpp>
 
 #include <sstream>
@@ -456,6 +459,51 @@ static bool scheduleDeferred(std::function<void()> fn) {
     return true;
 }
 
+// ─── Context menus, built exactly as a right-click would ───────────────────
+// ModuleWidget::createContextMenu() → createMenu() news a MenuOverlay, adds a
+// Menu to it and appends the overlay to APP->scene, then Rack adds its standard
+// entries and calls the module's appendContextMenu(). We take that overlay from
+// the end of the Scene's child list and delete it in the same step pass, so it
+// is never drawn.
+
+static ui::MenuOverlay* openContextMenu(app::ModuleWidget* mw) {
+    size_t before = APP->scene->children.size();
+    mw->createContextMenu();
+    if (APP->scene->children.size() <= before) return nullptr;
+    return dynamic_cast<ui::MenuOverlay*>(APP->scene->children.back());
+}
+
+static ui::Menu* topMenu(ui::MenuOverlay* overlay) {
+    for (widget::Widget* w : overlay->children)
+        if (auto* m = dynamic_cast<ui::Menu*>(w)) return m;
+    return nullptr;
+}
+
+// Depth 2: top-level items and one submenu level. Labels/separators skipped.
+static std::vector<MenuItemInfo> collectMenuItems(app::ModuleWidget* mw) {
+    std::vector<MenuItemInfo> out;
+    ui::MenuOverlay* overlay = openContextMenu(mw);
+    if (!overlay) return out;
+    if (ui::Menu* menu = topMenu(overlay)) {
+        for (widget::Widget* w : menu->children) {
+            auto* item = dynamic_cast<ui::MenuItem*>(w);
+            if (!item) continue;
+            out.push_back({{item->text}, item->rightText, item->disabled});
+            ui::Menu* child = item->createChildMenu();
+            if (!child) continue;
+            menu->setChildMenu(child);            // the overlay now owns it
+            for (widget::Widget* cw : child->children) {
+                auto* ci = dynamic_cast<ui::MenuItem*>(cw);
+                if (!ci) continue;
+                out.push_back({{item->text, ci->text}, ci->rightText, ci->disabled});
+            }
+            menu->setChildMenu(NULL);
+        }
+    }
+    overlay->requestDelete();
+    return out;
+}
+
 static std::string getMcpModulePositionJson(app::RackWidget* rackWidget, int64_t mcpId) {
     if (!rackWidget || mcpId < 0) {
         return "{" + jsonKV("id", std::to_string(mcpId))
@@ -550,7 +598,8 @@ static const char* MCP_TOOLS_JSON = R"json([
 {"name":"vcvrack_delete_cable","description":"Remove a cable connection by cable ID.","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Cable ID"}},"required":["id"]}},
 {"name":"vcvrack_get_sample_rate","description":"Get the current audio engine sample rate in Hz.","inputSchema":{"type":"object","properties":{}}},
 {"name":"vcvrack_search_library","description":"Search the installed plugin library for modules. Two modes:\n1. Single search: pass 'q' and/or 'tags'.\n2. Multi-search: pass 'queries' array to find needed module groups in ONE call (each keyed by its 'label' in the response). Always prefer multi-search when building a patch.\n\nIMPORTANT: 'tags' must use real VCV Rack Browser tag names (not module-type shorthand). Common valid tags: 'Oscillator', 'Filter', 'Amplifier', 'Envelope Generator', 'LFO', 'Sequencer', 'Mixer', 'Effect', 'Utility'. For example, use 'Filter' instead of 'VCF', and 'Amplifier' instead of 'VCA'.","inputSchema":{"type":"object","properties":{"q":{"type":"string","description":"Search query matching slug, name, or description (single search)"},"tags":{"type":"string","description":"Tag filter using VCV Rack tag names, e.g. 'Oscillator', 'Filter', 'Amplifier', 'Envelope Generator', 'LFO', 'Mixer' (single search). Avoid shorthand like 'VCF'/'VCA'."},"queries":{"type":"array","description":"Multi-search: array of independent queries returned grouped by label. Use to find all needed module types in one call.","items":{"type":"object","properties":{"label":{"type":"string","description":"Key for these results in the response e.g. 'osc', 'filter', 'amp'"},"q":{"type":"string","description":"Search query"},"tags":{"type":"string","description":"Tag filter using VCV Rack tag names, e.g. 'Oscillator', 'Filter', 'Amplifier'"}},"required":["label"]}}},"required":[]}},
-{"name":"vcvrack_get_plugin","description":"Get detailed information about an installed plugin and its full module list.","inputSchema":{"type":"object","properties":{"plugin_slug":{"type":"string","description":"Plugin slug"}},"required":["plugin_slug"]}}
+{"name":"vcvrack_get_plugin","description":"Get detailed information about an installed plugin and its full module list.","inputSchema":{"type":"object","properties":{"plugin_slug":{"type":"string","description":"Plugin slug"}},"required":["plugin_slug"]}},
+{"name":"vcvrack_menu_list","description":"List a module's right-click context menu as label paths — top-level items and one submenu level. 'path' strings are the exact labels vcvrack_menu_invoke expects; 'right' carries Rack's check mark or submenu arrow; headings and separators are omitted. The menu is built inside Rack and discarded without being drawn, so this works minimized.","inputSchema":{"type":"object","properties":{"module_id":{"type":"integer","description":"Module ID"}},"required":["module_id"]}}
 ])json";
 
 // ─── MCP prompts ────────────────────────────────────────────────────────────
@@ -1227,6 +1276,21 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
             return toolOk("{\"sampleRate\":" + std::to_string(sr) + "}");
         }
 
+        if (name == "vcvrack_menu_list") {
+            int64_t id = (int64_t)parseJsonDouble(args, "module_id", -1);
+            std::vector<MenuItemInfo> items;
+            bool found = false;
+            if (!taskQueue->postSync([rackApp, id, &items, &found]() {
+                if (!rackApp || !rackApp->scene || !rackApp->scene->rack) return;
+                app::ModuleWidget* mw = rackApp->scene->rack->getModule(id);
+                if (!mw) return;
+                found = true;
+                items = collectMenuItems(mw);
+            }, "menu_list/" + std::to_string(id))) return toolFail("UI thread not responding (timed out)");
+            if (!found) return toolFail("Module not found: " + std::to_string(id));
+            return toolOk(menuItemsJson(id, items));
+        }
+
         if (name == "vcvrack_search_library") {
             // Core search: given a tag-filter string and a query string, returns a
             // JSON array of { slug, name, modules[] } plugin objects.
@@ -1754,6 +1818,22 @@ void RackHttpServer::setupRoutes() {
                 if (p->slug == slug) { res.set_content(ok(serializePlugin(p)), "application/json"); return; }
             }
             res.status = 404; res.set_content(err("Plugin not found"), "application/json");
+        });
+
+        // GET /modules/{id}/menu — context-menu label paths (see vcvrack_menu_list).
+        svr.Get(R"(/modules/(\d+)/menu)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            int64_t id = std::stoll(req.matches[1]);
+            std::vector<MenuItemInfo> items;
+            bool found = false;
+            if (!taskQueue->postSync([rackApp, id, &items, &found]() {
+                if (!rackApp || !rackApp->scene || !rackApp->scene->rack) return;
+                app::ModuleWidget* mw = rackApp->scene->rack->getModule(id);
+                if (!mw) return;
+                found = true;
+                items = collectMenuItems(mw);
+            }, "menu_list/" + std::to_string(id))) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
+            if (!found) { res.status = 404; res.set_content(err("Module not found: " + std::to_string(id)), "application/json"); return; }
+            res.set_content(ok(menuItemsJson(id, items)), "application/json");
         });
 
         // ── MCP Streamable HTTP transport (protocol version 2024-11-05) ─────
