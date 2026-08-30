@@ -1071,7 +1071,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                 sr = rackApp->engine->getSampleRate();
                 count = (int)rackApp->engine->getModuleIds().size();
             }, "get_status")) return toolFail("UI thread not responding (timed out)");
-            return toolOk("{\"server\":\"VCV Rack MCP Bridge\",\"version\":\"1.3.0\","
+            return toolOk("{\"server\":\"VCV Rack MCP Bridge\",\"version\":\"2.2.0\","
                           "\"sampleRate\":" + std::to_string(sr) +
                           ",\"moduleCount\":" + std::to_string(count) + "}");
         }
@@ -1501,7 +1501,7 @@ void RackHttpServer::handleMcpPost(const httplib::Request& req, httplib::Respons
         }
 
         if (method == "initialize") {
-            res.set_content(mcpOk(id, R"({"protocolVersion":"2024-11-05","capabilities":{"tools":{},"prompts":{}},"serverInfo":{"name":"VCV Rack MCP Bridge","version":"1.3.0"}})"), "application/json");
+            res.set_content(mcpOk(id, R"({"protocolVersion":"2024-11-05","capabilities":{"tools":{},"prompts":{}},"serverInfo":{"name":"VCV Rack MCP Bridge","version":"2.2.0"}})"), "application/json");
             return;
         }
 
@@ -1578,7 +1578,7 @@ void RackHttpServer::setupRoutes() {
                 sr = rackApp->engine->getSampleRate();
                 count = (int)rackApp->engine->getModuleIds().size();
             })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
-            std::string body = "{" + jsonKVs("server", "VCV Rack MCP Bridge") + jsonKVs("version", "1.3.0") +
+            std::string body = "{" + jsonKVs("server", "VCV Rack MCP Bridge") + jsonKVs("version", "2.2.0") +
                 jsonKVs("build", std::string(__DATE__) + " " + __TIME__) +
                 jsonKV("sampleRate", std::to_string(sr)) + jsonKV("moduleCount", std::to_string(count), true) + "}";
             res.set_content(ok(body), "application/json");
