@@ -504,6 +504,33 @@ static std::vector<MenuItemInfo> collectMenuItems(app::ModuleWidget* mw) {
     return out;
 }
 
+// Rebuilds the menu, fires the item at `path` (exact label match on `text`,
+// first hit wins), closes the menu. False if no item matched; nothing fired.
+static bool invokeMenuPath(app::ModuleWidget* mw, const std::vector<std::string>& path) {
+    ui::MenuOverlay* overlay = openContextMenu(mw);
+    if (!overlay) return false;
+    ui::MenuItem* target = nullptr;
+    if (ui::Menu* menu = topMenu(overlay)) {
+        for (widget::Widget* w : menu->children) {
+            auto* item = dynamic_cast<ui::MenuItem*>(w);
+            if (!item || item->text != path[0]) continue;
+            if (path.size() == 1) { target = item; break; }
+            ui::Menu* child = item->createChildMenu();
+            if (!child) continue;
+            menu->setChildMenu(child);
+            for (widget::Widget* cw : child->children) {
+                auto* ci = dynamic_cast<ui::MenuItem*>(cw);
+                if (ci && ci->text == path[1]) { target = ci; break; }
+            }
+            if (target) break;
+        }
+    }
+    if (!target) { overlay->requestDelete(); return false; }
+    target->doAction();          // consumed by default → the overlay requests its own deletion
+    overlay->requestDelete();    // idempotent; covers an action that left the event unconsumed
+    return true;
+}
+
 static std::string getMcpModulePositionJson(app::RackWidget* rackWidget, int64_t mcpId) {
     if (!rackWidget || mcpId < 0) {
         return "{" + jsonKV("id", std::to_string(mcpId))
@@ -599,7 +626,8 @@ static const char* MCP_TOOLS_JSON = R"json([
 {"name":"vcvrack_get_sample_rate","description":"Get the current audio engine sample rate in Hz.","inputSchema":{"type":"object","properties":{}}},
 {"name":"vcvrack_search_library","description":"Search the installed plugin library for modules. Two modes:\n1. Single search: pass 'q' and/or 'tags'.\n2. Multi-search: pass 'queries' array to find needed module groups in ONE call (each keyed by its 'label' in the response). Always prefer multi-search when building a patch.\n\nIMPORTANT: 'tags' must use real VCV Rack Browser tag names (not module-type shorthand). Common valid tags: 'Oscillator', 'Filter', 'Amplifier', 'Envelope Generator', 'LFO', 'Sequencer', 'Mixer', 'Effect', 'Utility'. For example, use 'Filter' instead of 'VCF', and 'Amplifier' instead of 'VCA'.","inputSchema":{"type":"object","properties":{"q":{"type":"string","description":"Search query matching slug, name, or description (single search)"},"tags":{"type":"string","description":"Tag filter using VCV Rack tag names, e.g. 'Oscillator', 'Filter', 'Amplifier', 'Envelope Generator', 'LFO', 'Mixer' (single search). Avoid shorthand like 'VCF'/'VCA'."},"queries":{"type":"array","description":"Multi-search: array of independent queries returned grouped by label. Use to find all needed module types in one call.","items":{"type":"object","properties":{"label":{"type":"string","description":"Key for these results in the response e.g. 'osc', 'filter', 'amp'"},"q":{"type":"string","description":"Search query"},"tags":{"type":"string","description":"Tag filter using VCV Rack tag names, e.g. 'Oscillator', 'Filter', 'Amplifier'"}},"required":["label"]}}},"required":[]}},
 {"name":"vcvrack_get_plugin","description":"Get detailed information about an installed plugin and its full module list.","inputSchema":{"type":"object","properties":{"plugin_slug":{"type":"string","description":"Plugin slug"}},"required":["plugin_slug"]}},
-{"name":"vcvrack_menu_list","description":"List a module's right-click context menu as label paths — top-level items and one submenu level. 'path' strings are the exact labels vcvrack_menu_invoke expects; 'right' carries Rack's check mark or submenu arrow; headings and separators are omitted. The menu is built inside Rack and discarded without being drawn, so this works minimized.","inputSchema":{"type":"object","properties":{"module_id":{"type":"integer","description":"Module ID"}},"required":["module_id"]}}
+{"name":"vcvrack_menu_list","description":"List a module's right-click context menu as label paths — top-level items and one submenu level. 'path' strings are the exact labels vcvrack_menu_invoke expects; 'right' carries Rack's check mark or submenu arrow; headings and separators are omitted. The menu is built inside Rack and discarded without being drawn, so this works minimized.","inputSchema":{"type":"object","properties":{"module_id":{"type":"integer","description":"Module ID"}},"required":["module_id"]}},
+{"name":"vcvrack_menu_invoke","description":"Click an item in a module's right-click context menu by label path, e.g. [\"Polyphony channels\",\"4\"] or [\"Bypass\"]. Labels must match vcvrack_menu_list exactly. Returns {\"scheduled\":true} at once; the click fires on the next UI frame because it may delete modules or open a dialog. Confirm the effect with vcvrack_menu_list (check mark); an unmatched path is logged in Rack's log.txt and nothing fires.","inputSchema":{"type":"object","properties":{"module_id":{"type":"integer","description":"Module ID"},"path":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":2,"description":"[label] or [label, submenu label]"}},"required":["module_id","path"]}}
 ])json";
 
 // ─── MCP prompts ────────────────────────────────────────────────────────────
@@ -1291,6 +1319,30 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
             return toolOk(menuItemsJson(id, items));
         }
 
+        if (name == "vcvrack_menu_invoke") {
+            int64_t id = (int64_t)parseJsonDouble(args, "module_id", -1);
+            std::vector<std::string> path = parseJsonStringArray(args, "path");
+            if (path.empty() || path.size() > 2) return toolFail("'path' must be an array of 1 or 2 labels");
+            for (const std::string& p : path) if (p.empty()) return toolFail("'path' labels must be non-empty");
+            bool found = false, queued = false;
+            if (!taskQueue->postSync([rackApp, id, path, &found, &queued]() {
+                if (!rackApp || !rackApp->scene || !rackApp->scene->rack) return;
+                if (!rackApp->scene->rack->getModule(id)) return;
+                found = true;
+                queued = scheduleDeferred([rackApp, id, path]() {
+                    app::ModuleWidget* mw = rackApp->scene->rack ? rackApp->scene->rack->getModule(id) : nullptr;
+                    if (!mw) { WARN("[RackMcpServer] menu_invoke: module %lld is gone", (long long)id); return; }
+                    if (invokeMenuPath(mw, path))
+                        INFO("[RackMcpServer] menu_invoke: %lld -> %s", (long long)id, path.back().c_str());
+                    else
+                        WARN("[RackMcpServer] menu_invoke: path not found on module %lld: %s", (long long)id, path.back().c_str());
+                });
+            }, "menu_invoke/" + std::to_string(id))) return toolFail("UI thread not responding (timed out)");
+            if (!found) return toolFail("Module not found: " + std::to_string(id));
+            if (!queued) return toolFail("a deferred task is already pending");
+            return toolOk("{" + jsonKV("scheduled", "true") + jsonKV("module_id", std::to_string(id)) + "\"path\": " + pathJson(path) + "}");
+        }
+
         if (name == "vcvrack_search_library") {
             // Core search: given a tag-filter string and a query string, returns a
             // JSON array of { slug, name, modules[] } plugin objects.
@@ -1834,6 +1886,15 @@ void RackHttpServer::setupRoutes() {
             }, "menu_list/" + std::to_string(id))) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
             if (!found) { res.status = 404; res.set_content(err("Module not found: " + std::to_string(id)), "application/json"); return; }
             res.set_content(ok(menuItemsJson(id, items)), "application/json");
+        });
+
+        // POST /modules/{id}/menu {"path": ["Label", "Sub"]} — scheduled; confirm via GET .../menu.
+        svr.Post(R"(/modules/(\d+)/menu)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            int64_t id = std::stoll(req.matches[1]);
+            std::string body = dispatchTool("vcvrack_menu_invoke",
+                "{\"module_id\":" + std::to_string(id) + ",\"path\":" + pathJson(parseJsonStringArray(req.body, "path")) + "}");
+            res.status = (body.find("\"isError\":true") != std::string::npos) ? 400 : 200;   // toolFail() spells it exactly so
+            res.set_content(body, "application/json");
         });
 
         // ── MCP Streamable HTTP transport (protocol version 2024-11-05) ─────
