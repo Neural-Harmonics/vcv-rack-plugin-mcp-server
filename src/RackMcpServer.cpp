@@ -18,6 +18,7 @@
 #include <sstream>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <set>
 
 using namespace rack;
@@ -414,6 +415,45 @@ static std::string toolOk(const std::string& text) {
 
 static std::string toolFail(const std::string& text) {
     return "{\"content\":[{\"type\":\"text\",\"text\":" + jsonStr(text) + "}],\"isError\":true}";
+}
+
+// ─── Deferred UI task ──────────────────────────────────────────────────────
+// Some actions must run *after* the tool has replied: patch::Manager::load()
+// destroys every module — including this one, whose destructor joins the HTTP
+// thread still inside the request — and a menu action may delete modules or
+// block the UI thread in an osdialog. This hidden Scene-level widget (the Scene
+// outlives patches) runs one queued function on its next step(), outside the
+// rack's child iteration. One slot: a second schedule while one is pending is
+// a caller error, never an overwrite.
+static std::mutex g_deferredMutex;
+static std::function<void()> g_deferredFn;
+
+struct DeferredUiTask : widget::Widget {
+    void step() override {
+        std::function<void()> fn;
+        { std::lock_guard<std::mutex> lk(g_deferredMutex); fn.swap(g_deferredFn); }
+        if (!fn) return;
+        try { fn(); }
+        catch (std::exception& e) { WARN("[RackMcpServer] deferred task failed: %s", e.what()); }
+    }
+};
+
+// UI thread only. Idempotent. The Scene deletes the widget at shutdown.
+static void ensureDeferredRunner() {
+    static DeferredUiTask* runner = nullptr;
+    if ((runner && runner->parent) || !APP->scene) return;
+    runner = new DeferredUiTask;
+    runner->visible = false;   // "Disables rendering but allow stepping" — Widget.hpp:27
+    APP->scene->addChild(runner);
+}
+
+// UI thread only. False if a task is already waiting for its frame.
+static bool scheduleDeferred(std::function<void()> fn) {
+    ensureDeferredRunner();
+    std::lock_guard<std::mutex> lk(g_deferredMutex);
+    if (g_deferredFn) return false;
+    g_deferredFn = std::move(fn);
+    return true;
 }
 
 static std::string getMcpModulePositionJson(app::RackWidget* rackWidget, int64_t mcpId) {
