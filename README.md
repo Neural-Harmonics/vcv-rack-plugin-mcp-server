@@ -314,6 +314,8 @@ All responses use one of these envelopes:
 | `DELETE` | `/modules/:id` | - | Remove a module |
 | `GET` | `/modules/:id/params` | - | List parameter values |
 | `POST` | `/modules/:id/params` | `{params:[{id,value}]}` | Set parameters |
+| `GET` | `/modules/:id/menu` | - | List context-menu items as label paths |
+| `POST` | `/modules/:id/menu` | `{path:["label","sublabel?"]}` | Invoke a context-menu item |
 | `GET` | `/cables` | - | List cables |
 | `POST` | `/cables` | `{outputModuleId, outputId, inputModuleId, inputId}` | Create a cable |
 | `DELETE` | `/cables/:id` | - | Remove a cable |

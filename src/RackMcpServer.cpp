@@ -13,11 +13,18 @@
 #include <rack.hpp>
 #include <app/RackWidget.hpp>
 #include <app/ModuleWidget.hpp>
+#include <ui/Menu.hpp>
+#include <ui/MenuItem.hpp>
+#include <ui/MenuOverlay.hpp>
 #include <tag.hpp>
 
 #include <sstream>
 #include <cstring>
+#include <atomic>
+#include <deque>
 #include <functional>
+#include <memory>
+#include <mutex>
 #include <set>
 
 using namespace rack;
@@ -28,14 +35,24 @@ std::future<void> UITaskQueue::post(std::function<void()> fn, const std::string&
     auto p = std::make_shared<std::promise<void>>();
     {
         std::lock_guard<std::mutex> lock(mutex);
-        tasks.push({fn, p, label});
+        tasks.push({fn, p, label, nullptr});   // async post: nothing to cancel
     }
     return p->get_future();
 }
 
 bool UITaskQueue::postSync(std::function<void()> fn, const std::string& label, int timeoutSecs) {
-    auto fut = post(fn, label);
+    // Queued by hand (not via post()) so we keep a handle on the cancel flag:
+    // postSync's callers capture their own stack by reference, so a task that
+    // outlives the wait must never run.
+    auto p = std::make_shared<std::promise<void>>();
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        tasks.push({fn, p, label, cancelled});
+    }
+    auto fut = p->get_future();
     if (fut.wait_for(std::chrono::seconds(timeoutSecs)) == std::future_status::timeout) {
+        cancelled->store(true);
         WARN("[RackMcpServer] postSync: task '%s' timed out after %ds (UI thread not draining)",
              label.c_str(), timeoutSecs);
         return false;
@@ -53,6 +70,12 @@ void UITaskQueue::drain() {
     while (!local.empty()) {
         auto& task = local.front();
         const std::string& lbl = task.label.empty() ? "(unlabelled)" : task.label;
+        if (task.cancelled && task.cancelled->load()) {
+            // postSync gave up on it; its by-reference captures are dead now.
+            WARN("[RackMcpServer] drain: skipping cancelled task '%s'", lbl.c_str());
+            local.pop();
+            continue;
+        }
         INFO("[RackMcpServer] drain: executing task '%s'", lbl.c_str());
         try {
             task.fn();
@@ -88,12 +111,49 @@ static std::string jsonStr(const std::string& s) {
     return out + "\"";
 }
 
+// ponytail: undoes only the escapes jsonStr() produces (plus \/); no \uXXXX.
+static std::string jsonUnescape(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            char n = s[++i];
+            out += (n == 'n') ? '\n' : (n == 'r') ? '\r' : (n == 't') ? '\t' : n;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
 static std::string jsonKV(const std::string& k, const std::string& v, bool last = false) {
     return jsonStr(k) + ": " + v + (last ? "" : ", ");
 }
 
 static std::string jsonKVs(const std::string& k, const std::string& s, bool last = false) {
     return jsonStr(k) + ": " + jsonStr(s) + (last ? "" : ", ");
+}
+
+struct MenuItemInfo {
+    std::vector<std::string> path;   // ["Label"] or ["Label", "Sub label"]
+    std::string right;               // Rack's rightText: "✔" for checked, "▸" for submenu, else ""
+    bool disabled = false;
+};
+
+static std::string pathJson(const std::vector<std::string>& path) {
+    std::string s = "[";
+    for (size_t j = 0; j < path.size(); j++) { if (j) s += ", "; s += jsonStr(path[j]); }
+    return s + "]";
+}
+
+static std::string menuItemsJson(int64_t moduleId, const std::vector<MenuItemInfo>& items) {
+    std::string s = "{" + jsonKV("module_id", std::to_string(moduleId)) + "\"items\": [";
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i) s += ", ";
+        s += "{\"path\": " + pathJson(items[i].path) + ", "
+           + jsonKVs("right", items[i].right)
+           + jsonKV("disabled", items[i].disabled ? "true" : "false", true) + "}";
+    }
+    return s + "]}";
 }
 
 static std::string ok(const std::string& body) {
@@ -269,6 +329,31 @@ static double parseJsonDouble(const std::string& json, const std::string& key, d
     try { return std::stod(json.substr(pos)); } catch (...) { return def; }
 }
 
+// Values of "key": ["a", "b"]; empty if the key or the array is missing.
+static std::vector<std::string> parseJsonStringArray(const std::string& json, const std::string& key) {
+    std::vector<std::string> out;
+    size_t k = json.find("\"" + key + "\"");
+    if (k == std::string::npos) return out;
+    size_t open = json.find('[', k);
+    if (open == std::string::npos) return out;
+    size_t i = open + 1;
+    while (i < json.size() && json[i] != ']') {
+        if (json[i] == '"') {
+            size_t j = i + 1;
+            std::string raw;
+            while (j < json.size() && json[j] != '"') {
+                if (json[j] == '\\' && j + 1 < json.size()) raw += json[j++];
+                raw += json[j++];
+            }
+            out.push_back(jsonUnescape(raw));
+            i = j + 1;
+        } else {
+            i++;
+        }
+    }
+    return out;
+}
+
 // Extract raw JSON value (string, number, object, array, bool, null) by key
 static std::string parseRawValue(const std::string& json, const std::string& key) {
     std::string sk = "\"" + key + "\"";
@@ -352,6 +437,149 @@ static std::string toolOk(const std::string& text) {
 
 static std::string toolFail(const std::string& text) {
     return "{\"content\":[{\"type\":\"text\",\"text\":" + jsonStr(text) + "}],\"isError\":true}";
+}
+
+// ─── Deferred UI task ──────────────────────────────────────────────────────
+// Some actions must run *after* the tool has replied: patch::Manager::load()
+// destroys every module — including this one, whose destructor joins the HTTP
+// thread still inside the request — and a menu action may delete modules or
+// block the UI thread in an osdialog. This hidden Scene-level widget (the Scene
+// outlives patches) runs one queued function on its next step(), outside the
+// rack's child iteration. A FIFO: scheduling while one is pending queues behind
+// it, and step() runs exactly one function per frame — so an action that opens a
+// modal never swallows the one queued after it.
+static std::mutex g_deferredMutex;
+static std::deque<std::function<void()>> g_deferredQueue;
+
+struct DeferredUiTask : widget::Widget {
+    void step() override {
+        std::function<void()> fn;
+        {
+            std::lock_guard<std::mutex> lk(g_deferredMutex);
+            if (g_deferredQueue.empty()) return;
+            fn = std::move(g_deferredQueue.front());
+            g_deferredQueue.pop_front();
+        }
+        if (!fn) return;
+        try { fn(); }
+        catch (std::exception& e) { WARN("[RackMcpServer] deferred task failed: %s", e.what()); }
+    }
+};
+
+// UI thread only. Idempotent. The Scene deletes the widget at shutdown, and the
+// WeakPtr reads null once it has — so we install a fresh one instead of chasing
+// a dangling pointer. False if there is no Scene to attach to.
+static bool ensureDeferredRunner() {
+    static WeakPtr<DeferredUiTask> runner;
+    DeferredUiTask* r = runner.get();
+    if (r && r->parent) return true;
+    if (!APP->scene) return false;
+    r = new DeferredUiTask;
+    r->visible = false;   // "Disables rendering but allow stepping" — Widget.hpp:27
+    APP->scene->addChild(r);
+    runner = r;
+    return true;
+}
+
+// UI thread only. False only if there is no runner to run the task.
+static bool scheduleDeferred(std::function<void()> fn) {
+    if (!ensureDeferredRunner()) return false;
+    std::lock_guard<std::mutex> lk(g_deferredMutex);
+    g_deferredQueue.push_back(std::move(fn));
+    return true;
+}
+
+// ─── Context menus, built exactly as a right-click would ───────────────────
+// ModuleWidget::createContextMenu() → createMenu() news a MenuOverlay, adds a
+// Menu to it and appends the overlay to APP->scene, then Rack adds its standard
+// entries and calls the module's appendContextMenu(). We take the last overlay
+// added past the pre-call child count and delete it in the same step pass, so it
+// is never drawn. Anything else appended is not ours — request its deletion too.
+
+static ui::MenuOverlay* openContextMenu(app::ModuleWidget* mw) {
+    size_t before = APP->scene->children.size();
+    mw->createContextMenu();
+    ui::MenuOverlay* overlay = nullptr;
+    std::vector<widget::Widget*> strays;
+    size_t i = 0;
+    for (widget::Widget* w : APP->scene->children) {
+        if (i++ < before) continue;
+        if (auto* o = dynamic_cast<ui::MenuOverlay*>(w)) {
+            if (overlay) strays.push_back(overlay);   // an earlier overlay: not the top one
+            overlay = o;
+        } else {
+            strays.push_back(w);
+        }
+    }
+    for (widget::Widget* w : strays) w->requestDelete();
+    return overlay;
+}
+
+static ui::Menu* topMenu(ui::MenuOverlay* overlay) {
+    for (widget::Widget* w : overlay->children)
+        if (auto* m = dynamic_cast<ui::Menu*>(w)) return m;
+    return nullptr;
+}
+
+// Depth 2: top-level items and one submenu level. Labels/separators skipped.
+static std::vector<MenuItemInfo> collectMenuItems(app::ModuleWidget* mw) {
+    std::vector<MenuItemInfo> out;
+    ui::MenuOverlay* overlay = openContextMenu(mw);
+    if (!overlay) return out;
+    // Whatever throws below — createChildMenu(), plugin code — the overlay must
+    // not survive the frame, or it is drawn full-screen and eats every event.
+    DEFER({ overlay->requestDelete(); });
+    if (ui::Menu* menu = topMenu(overlay)) {
+        for (widget::Widget* w : menu->children) {
+            auto* item = dynamic_cast<ui::MenuItem*>(w);
+            if (!item) continue;
+            item->step();   // createCheckMenuItem() only sets rightText in step()
+            out.push_back({{item->text}, item->rightText, item->disabled});
+            ui::Menu* child = item->createChildMenu();
+            if (!child) continue;
+            menu->setChildMenu(child);            // the overlay now owns it
+            for (widget::Widget* cw : child->children) {
+                auto* ci = dynamic_cast<ui::MenuItem*>(cw);
+                if (!ci) continue;
+                ci->step();   // ditto for createIndexSubmenuItem()
+                out.push_back({{item->text, ci->text}, ci->rightText, ci->disabled});
+            }
+            menu->setChildMenu(NULL);
+        }
+    }
+    return out;
+}
+
+// Rebuilds the menu, fires the item at `path` (exact label match on `text`,
+// first hit wins), closes the menu. False if no item matched; nothing fired.
+static bool invokeMenuPath(app::ModuleWidget* mw, const std::vector<std::string>& path) {
+    ui::MenuOverlay* overlay = openContextMenu(mw);
+    if (!overlay) return false;
+    DEFER({ overlay->requestDelete(); });   // also covers a throw out of doAction()
+    ui::MenuItem* target = nullptr;
+    if (ui::Menu* menu = topMenu(overlay)) {
+        for (widget::Widget* w : menu->children) {
+            auto* item = dynamic_cast<ui::MenuItem*>(w);
+            if (!item || item->text != path[0]) continue;
+            if (path.size() == 1) { target = item; break; }
+            ui::Menu* child = item->createChildMenu();
+            if (!child) continue;
+            menu->setChildMenu(child);
+            for (widget::Widget* cw : child->children) {
+                auto* ci = dynamic_cast<ui::MenuItem*>(cw);
+                if (ci && ci->text == path[1]) { target = ci; break; }
+            }
+            if (target) break;
+        }
+    }
+    // MenuItem::onDragDrop gates on !disabled; doAction() does not, so gate here.
+    if (target && target->disabled) {
+        WARN("[RackMcpServer] menu_invoke: item is disabled: %s", path.back().c_str());
+        target = nullptr;
+    }
+    if (!target) return false;
+    target->doAction();          // consumed by default → the overlay requests its own deletion
+    return true;
 }
 
 static std::string getMcpModulePositionJson(app::RackWidget* rackWidget, int64_t mcpId) {
@@ -448,7 +676,9 @@ static const char* MCP_TOOLS_JSON = R"json([
 {"name":"vcvrack_delete_cable","description":"Remove a cable connection by cable ID.","inputSchema":{"type":"object","properties":{"id":{"type":"integer","description":"Cable ID"}},"required":["id"]}},
 {"name":"vcvrack_get_sample_rate","description":"Get the current audio engine sample rate in Hz.","inputSchema":{"type":"object","properties":{}}},
 {"name":"vcvrack_search_library","description":"Search the installed plugin library for modules. Two modes:\n1. Single search: pass 'q' and/or 'tags'.\n2. Multi-search: pass 'queries' array to find needed module groups in ONE call (each keyed by its 'label' in the response). Always prefer multi-search when building a patch.\n\nIMPORTANT: 'tags' must use real VCV Rack Browser tag names (not module-type shorthand). Common valid tags: 'Oscillator', 'Filter', 'Amplifier', 'Envelope Generator', 'LFO', 'Sequencer', 'Mixer', 'Effect', 'Utility'. For example, use 'Filter' instead of 'VCF', and 'Amplifier' instead of 'VCA'.","inputSchema":{"type":"object","properties":{"q":{"type":"string","description":"Search query matching slug, name, or description (single search)"},"tags":{"type":"string","description":"Tag filter using VCV Rack tag names, e.g. 'Oscillator', 'Filter', 'Amplifier', 'Envelope Generator', 'LFO', 'Mixer' (single search). Avoid shorthand like 'VCF'/'VCA'."},"queries":{"type":"array","description":"Multi-search: array of independent queries returned grouped by label. Use to find all needed module types in one call.","items":{"type":"object","properties":{"label":{"type":"string","description":"Key for these results in the response e.g. 'osc', 'filter', 'amp'"},"q":{"type":"string","description":"Search query"},"tags":{"type":"string","description":"Tag filter using VCV Rack tag names, e.g. 'Oscillator', 'Filter', 'Amplifier'"}},"required":["label"]}}},"required":[]}},
-{"name":"vcvrack_get_plugin","description":"Get detailed information about an installed plugin and its full module list.","inputSchema":{"type":"object","properties":{"plugin_slug":{"type":"string","description":"Plugin slug"}},"required":["plugin_slug"]}}
+{"name":"vcvrack_get_plugin","description":"Get detailed information about an installed plugin and its full module list.","inputSchema":{"type":"object","properties":{"plugin_slug":{"type":"string","description":"Plugin slug"}},"required":["plugin_slug"]}},
+{"name":"vcvrack_menu_list","description":"List a module's right-click context menu as label paths — top-level items and one submenu level. 'path' strings are the exact labels vcvrack_menu_invoke expects; 'right' carries Rack's check mark or submenu arrow; headings and separators are omitted. The menu is built inside Rack and discarded without being drawn, so this works minimized.","inputSchema":{"type":"object","properties":{"module_id":{"type":"integer","description":"Module ID"}},"required":["module_id"]}},
+{"name":"vcvrack_menu_invoke","description":"Click an item in a module's right-click context menu by label path, e.g. [\"Polyphony channels\",\"4\"] or [\"Bypass\"]. Labels must match vcvrack_menu_list exactly. Returns {\"scheduled\":true} at once; the click fires on the next UI frame because it may delete modules or open a dialog. Confirm the effect with vcvrack_menu_list (check mark); an unmatched path is logged in Rack's log.txt and nothing fires.","inputSchema":{"type":"object","properties":{"module_id":{"type":"integer","description":"Module ID"},"path":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":2,"description":"[label] or [label, submenu label]"}},"required":["module_id","path"]}}
 ])json";
 
 // ─── MCP prompts ────────────────────────────────────────────────────────────
@@ -841,7 +1071,7 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
                 sr = rackApp->engine->getSampleRate();
                 count = (int)rackApp->engine->getModuleIds().size();
             }, "get_status")) return toolFail("UI thread not responding (timed out)");
-            return toolOk("{\"server\":\"VCV Rack MCP Bridge\",\"version\":\"1.3.0\","
+            return toolOk("{\"server\":\"VCV Rack MCP Bridge\",\"version\":\"2.2.0\","
                           "\"sampleRate\":" + std::to_string(sr) +
                           ",\"moduleCount\":" + std::to_string(count) + "}");
         }
@@ -1125,6 +1355,45 @@ std::string RackHttpServer::dispatchTool(const std::string& name, const std::str
             return toolOk("{\"sampleRate\":" + std::to_string(sr) + "}");
         }
 
+        if (name == "vcvrack_menu_list") {
+            int64_t id = (int64_t)parseJsonDouble(args, "module_id", -1);
+            std::vector<MenuItemInfo> items;
+            bool found = false;
+            if (!taskQueue->postSync([rackApp, id, &items, &found]() {
+                if (!rackApp || !rackApp->scene || !rackApp->scene->rack) return;
+                app::ModuleWidget* mw = rackApp->scene->rack->getModule(id);
+                if (!mw) return;
+                found = true;
+                items = collectMenuItems(mw);
+            }, "menu_list/" + std::to_string(id))) return toolFail("UI thread not responding (timed out)");
+            if (!found) return toolFail("Module not found: " + std::to_string(id));
+            return toolOk(menuItemsJson(id, items));
+        }
+
+        if (name == "vcvrack_menu_invoke") {
+            int64_t id = (int64_t)parseJsonDouble(args, "module_id", -1);
+            std::vector<std::string> path = parseJsonStringArray(args, "path");
+            if (path.empty() || path.size() > 2) return toolFail("'path' must be an array of 1 or 2 labels");
+            for (const std::string& p : path) if (p.empty()) return toolFail("'path' labels must be non-empty");
+            bool found = false, queued = false;
+            if (!taskQueue->postSync([rackApp, id, path, &found, &queued]() {
+                if (!rackApp || !rackApp->scene || !rackApp->scene->rack) return;
+                if (!rackApp->scene->rack->getModule(id)) return;
+                found = true;
+                queued = scheduleDeferred([rackApp, id, path]() {
+                    app::ModuleWidget* mw = rackApp->scene->rack ? rackApp->scene->rack->getModule(id) : nullptr;
+                    if (!mw) { WARN("[RackMcpServer] menu_invoke: module %lld is gone", (long long)id); return; }
+                    if (invokeMenuPath(mw, path))
+                        INFO("[RackMcpServer] menu_invoke: %lld -> %s", (long long)id, path.back().c_str());
+                    else
+                        WARN("[RackMcpServer] menu_invoke: path not found on module %lld: %s", (long long)id, path.back().c_str());
+                });
+            }, "menu_invoke/" + std::to_string(id))) return toolFail("UI thread not responding (timed out)");
+            if (!found) return toolFail("Module not found: " + std::to_string(id));
+            if (!queued) return toolFail("a deferred task is already pending");
+            return toolOk("{" + jsonKV("scheduled", "true") + jsonKV("module_id", std::to_string(id)) + "\"path\": " + pathJson(path) + "}");
+        }
+
         if (name == "vcvrack_search_library") {
             // Core search: given a tag-filter string and a query string, returns a
             // JSON array of { slug, name, modules[] } plugin objects.
@@ -1232,7 +1501,7 @@ void RackHttpServer::handleMcpPost(const httplib::Request& req, httplib::Respons
         }
 
         if (method == "initialize") {
-            res.set_content(mcpOk(id, R"({"protocolVersion":"2024-11-05","capabilities":{"tools":{},"prompts":{}},"serverInfo":{"name":"VCV Rack MCP Bridge","version":"1.3.0"}})"), "application/json");
+            res.set_content(mcpOk(id, R"({"protocolVersion":"2024-11-05","capabilities":{"tools":{},"prompts":{}},"serverInfo":{"name":"VCV Rack MCP Bridge","version":"2.2.0"}})"), "application/json");
             return;
         }
 
@@ -1309,7 +1578,7 @@ void RackHttpServer::setupRoutes() {
                 sr = rackApp->engine->getSampleRate();
                 count = (int)rackApp->engine->getModuleIds().size();
             })) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
-            std::string body = "{" + jsonKVs("server", "VCV Rack MCP Bridge") + jsonKVs("version", "1.3.0") +
+            std::string body = "{" + jsonKVs("server", "VCV Rack MCP Bridge") + jsonKVs("version", "2.2.0") +
                 jsonKVs("build", std::string(__DATE__) + " " + __TIME__) +
                 jsonKV("sampleRate", std::to_string(sr)) + jsonKV("moduleCount", std::to_string(count), true) + "}";
             res.set_content(ok(body), "application/json");
@@ -1652,6 +1921,31 @@ void RackHttpServer::setupRoutes() {
                 if (p->slug == slug) { res.set_content(ok(serializePlugin(p)), "application/json"); return; }
             }
             res.status = 404; res.set_content(err("Plugin not found"), "application/json");
+        });
+
+        // GET /modules/{id}/menu — context-menu label paths (see vcvrack_menu_list).
+        svr.Get(R"(/modules/(\d+)/menu)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            int64_t id = std::stoll(req.matches[1]);
+            std::vector<MenuItemInfo> items;
+            bool found = false;
+            if (!taskQueue->postSync([rackApp, id, &items, &found]() {
+                if (!rackApp || !rackApp->scene || !rackApp->scene->rack) return;
+                app::ModuleWidget* mw = rackApp->scene->rack->getModule(id);
+                if (!mw) return;
+                found = true;
+                items = collectMenuItems(mw);
+            }, "menu_list/" + std::to_string(id))) { res.status = 503; res.set_content(err("UI thread not responding (timed out)"), "application/json"); return; }
+            if (!found) { res.status = 404; res.set_content(err("Module not found: " + std::to_string(id)), "application/json"); return; }
+            res.set_content(ok(menuItemsJson(id, items)), "application/json");
+        });
+
+        // POST /modules/{id}/menu {"path": ["Label", "Sub"]} — scheduled; confirm via GET .../menu.
+        svr.Post(R"(/modules/(\d+)/menu)", [rackApp, this](const httplib::Request& req, httplib::Response& res) {
+            int64_t id = std::stoll(req.matches[1]);
+            std::string body = dispatchTool("vcvrack_menu_invoke",
+                "{\"module_id\":" + std::to_string(id) + ",\"path\":" + pathJson(parseJsonStringArray(req.body, "path")) + "}");
+            res.status = (body.find("\"isError\":true") != std::string::npos) ? 400 : 200;   // toolFail() spells it exactly so
+            res.set_content(body, "application/json");
         });
 
         // ── MCP Streamable HTTP transport (protocol version 2024-11-05) ─────

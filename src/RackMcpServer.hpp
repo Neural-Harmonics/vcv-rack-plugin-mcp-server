@@ -17,6 +17,9 @@ struct UITaskQueue {
         std::function<void()>          fn;
         std::shared_ptr<std::promise<void>> promise;
         std::string                    label;
+        // Set by postSync when it stops waiting: drain() must then skip the task,
+        // because its lambda captures a now-dead HTTP-thread stack frame.
+        std::shared_ptr<std::atomic<bool>> cancelled;
     };
 
     std::mutex       mutex;

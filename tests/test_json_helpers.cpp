@@ -11,6 +11,7 @@
 #include <cassert>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 // ─── Copy of helpers under test (keep in sync with src/RackMcpServer.cpp) ───
 
@@ -67,6 +68,68 @@ static double parseJsonDouble(const std::string& json, const std::string& key, d
     while (pos < json.size() && (json[pos] == ':' || json[pos] == ' ')) pos++;
     try { return std::stod(json.substr(pos)); }
     catch (...) { return def; }
+}
+
+// ponytail: undoes only the escapes jsonStr() produces (plus \/); no \uXXXX.
+static std::string jsonUnescape(const std::string& s) {
+    std::string out;
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            char n = s[++i];
+            out += (n == 'n') ? '\n' : (n == 'r') ? '\r' : (n == 't') ? '\t' : n;
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
+}
+
+// Values of "key": ["a", "b"]; empty if the key or the array is missing.
+static std::vector<std::string> parseJsonStringArray(const std::string& json, const std::string& key) {
+    std::vector<std::string> out;
+    size_t k = json.find("\"" + key + "\"");
+    if (k == std::string::npos) return out;
+    size_t open = json.find('[', k);
+    if (open == std::string::npos) return out;
+    size_t i = open + 1;
+    while (i < json.size() && json[i] != ']') {
+        if (json[i] == '"') {
+            size_t j = i + 1;
+            std::string raw;
+            while (j < json.size() && json[j] != '"') {
+                if (json[j] == '\\' && j + 1 < json.size()) raw += json[j++];
+                raw += json[j++];
+            }
+            out.push_back(jsonUnescape(raw));
+            i = j + 1;
+        } else {
+            i++;
+        }
+    }
+    return out;
+}
+
+struct MenuItemInfo {
+    std::vector<std::string> path;   // ["Label"] or ["Label", "Sub label"]
+    std::string right;               // Rack's rightText: "✔" for checked, "▸" for submenu, else ""
+    bool disabled = false;
+};
+
+static std::string pathJson(const std::vector<std::string>& path) {
+    std::string s = "[";
+    for (size_t j = 0; j < path.size(); j++) { if (j) s += ", "; s += jsonStr(path[j]); }
+    return s + "]";
+}
+
+static std::string menuItemsJson(long long moduleId, const std::vector<MenuItemInfo>& items) {
+    std::string s = "{" + jsonKV("module_id", std::to_string(moduleId)) + "\"items\": [";
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i) s += ", ";
+        s += "{\"path\": " + pathJson(items[i].path) + ", "
+           + jsonKVs("right", items[i].right)
+           + jsonKV("disabled", items[i].disabled ? "true" : "false", true) + "}";
+    }
+    return s + "]}";
 }
 
 // ─── Minimal test framework ──────────────────────────────────────────────────
@@ -153,6 +216,17 @@ void test_parseJsonDouble() {
     CHECK("empty → default",     parseJsonDouble("", "x", -1.0) == -1.0);
 }
 
+void test_jsonUnescape() {
+    printf("\njsonUnescape()\n");
+    CHECK("windows path",     jsonUnescape("C:\\\\Users\\\\Arikl\\\\x.vcv") == "C:\\Users\\Arikl\\x.vcv");
+    CHECK("forward slashes",  jsonUnescape("C:\\/Users\\/x.vcv") == "C:/Users/x.vcv");
+    CHECK("plain untouched",  jsonUnescape("C:/Users/x.vcv") == "C:/Users/x.vcv");
+    CHECK("newline + quote",  jsonUnescape("a\\nb\\\"c") == "a\nb\"c");
+    std::string p = "C:\\Users\\my patch.vcv";
+    std::string quoted = jsonStr(p);
+    CHECK("round-trips jsonStr", jsonUnescape(quoted.substr(1, quoted.size() - 2)) == p);
+}
+
 void test_round_trip_ok() {
     printf("\nRound-trip: ok() response parsing\n");
     // Build a typical /status response body and verify it round-trips through
@@ -172,6 +246,39 @@ void test_round_trip_ok() {
     CHECK("sampleRate present",    resp.find("44100") != std::string::npos);
 }
 
+void test_parseJsonStringArray() {
+    printf("\nparseJsonStringArray()\n");
+    auto p = parseJsonStringArray("{\"module_id\": 5, \"path\": [\"Polyphony channels\", \"4\"]}", "path");
+    CHECK("array of two",          p.size() == 2 && p[0] == "Polyphony channels" && p[1] == "4");
+    CHECK("missing key -> empty",  parseJsonStringArray("{\"x\": [\"a\"]}", "path").empty());
+    CHECK("empty array",           parseJsonStringArray("{\"path\": []}", "path").empty());
+    auto q = parseJsonStringArray("{\"path\":[\"Say \\\"hi\\\"\"]}", "path");
+    CHECK("escaped quote unescaped", q.size() == 1 && q[0] == "Say \"hi\"");
+
+    auto b = parseJsonStringArray("{\"path\": [\"a]b\", \"c\"]}", "path");
+    CHECK("] inside a string",        b.size() == 2 && b[0] == "a]b" && b[1] == "c");
+
+    auto t = parseJsonStringArray("{\"path\": [\"a\\", "path");
+    CHECK("trailing lone backslash",  t.size() <= 1);
+
+    auto u = parseJsonStringArray("{\"path\": [\"abc", "path");
+    CHECK("unterminated string",      u.size() <= 1);
+
+    std::vector<std::string> orig = {"Say \"hi\" \\ done"};
+    auto rt = parseJsonStringArray("{\"path\": " + pathJson(orig) + "}", "path");
+    CHECK("pathJson round trip",      rt == orig);
+}
+
+void test_menuItemsJson() {
+    printf("\nmenuItemsJson()\n");
+    std::vector<MenuItemInfo> items = {{{"Initialize"}, "", false}, {{"Polyphony channels", "4"}, "\xe2\x9c\x94", true}};
+    CHECK("menu items json",
+          menuItemsJson(5, items) ==
+          "{\"module_id\": 5, \"items\": [{\"path\": [\"Initialize\"], \"right\": \"\", \"disabled\": false}, "
+          "{\"path\": [\"Polyphony channels\", \"4\"], \"right\": \"\xe2\x9c\x94\", \"disabled\": true}]}");
+    CHECK("empty items",           menuItemsJson(7, {}) == "{\"module_id\": 7, \"items\": []}");
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 int main() {
@@ -184,7 +291,10 @@ int main() {
     test_err_wrapper();
     test_parseJsonString();
     test_parseJsonDouble();
+    test_jsonUnescape();
     test_round_trip_ok();
+    test_parseJsonStringArray();
+    test_menuItemsJson();
 
     printf("\n%s\n", std::string(50, '-').c_str());
     printf("Results: %d passed, %d failed\n", pass_count, fail_count);
