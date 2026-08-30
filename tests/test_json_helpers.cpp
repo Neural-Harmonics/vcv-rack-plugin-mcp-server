@@ -254,6 +254,19 @@ void test_parseJsonStringArray() {
     CHECK("empty array",           parseJsonStringArray("{\"path\": []}", "path").empty());
     auto q = parseJsonStringArray("{\"path\":[\"Say \\\"hi\\\"\"]}", "path");
     CHECK("escaped quote unescaped", q.size() == 1 && q[0] == "Say \"hi\"");
+
+    auto b = parseJsonStringArray("{\"path\": [\"a]b\", \"c\"]}", "path");
+    CHECK("] inside a string",        b.size() == 2 && b[0] == "a]b" && b[1] == "c");
+
+    auto t = parseJsonStringArray("{\"path\": [\"a\\", "path");
+    CHECK("trailing lone backslash",  t.size() <= 1);
+
+    auto u = parseJsonStringArray("{\"path\": [\"abc", "path");
+    CHECK("unterminated string",      u.size() <= 1);
+
+    std::vector<std::string> orig = {"Say \"hi\" \\ done"};
+    auto rt = parseJsonStringArray("{\"path\": " + pathJson(orig) + "}", "path");
+    CHECK("pathJson round trip",      rt == orig);
 }
 
 void test_menuItemsJson() {

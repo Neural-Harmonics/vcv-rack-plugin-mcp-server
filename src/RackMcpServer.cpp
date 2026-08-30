@@ -20,7 +20,10 @@
 
 #include <sstream>
 #include <cstring>
+#include <atomic>
+#include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <set>
 
@@ -32,14 +35,24 @@ std::future<void> UITaskQueue::post(std::function<void()> fn, const std::string&
     auto p = std::make_shared<std::promise<void>>();
     {
         std::lock_guard<std::mutex> lock(mutex);
-        tasks.push({fn, p, label});
+        tasks.push({fn, p, label, nullptr});   // async post: nothing to cancel
     }
     return p->get_future();
 }
 
 bool UITaskQueue::postSync(std::function<void()> fn, const std::string& label, int timeoutSecs) {
-    auto fut = post(fn, label);
+    // Queued by hand (not via post()) so we keep a handle on the cancel flag:
+    // postSync's callers capture their own stack by reference, so a task that
+    // outlives the wait must never run.
+    auto p = std::make_shared<std::promise<void>>();
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        tasks.push({fn, p, label, cancelled});
+    }
+    auto fut = p->get_future();
     if (fut.wait_for(std::chrono::seconds(timeoutSecs)) == std::future_status::timeout) {
+        cancelled->store(true);
         WARN("[RackMcpServer] postSync: task '%s' timed out after %ds (UI thread not draining)",
              label.c_str(), timeoutSecs);
         return false;
@@ -57,6 +70,12 @@ void UITaskQueue::drain() {
     while (!local.empty()) {
         auto& task = local.front();
         const std::string& lbl = task.label.empty() ? "(unlabelled)" : task.label;
+        if (task.cancelled && task.cancelled->load()) {
+            // postSync gave up on it; its by-reference captures are dead now.
+            WARN("[RackMcpServer] drain: skipping cancelled task '%s'", lbl.c_str());
+            local.pop();
+            continue;
+        }
         INFO("[RackMcpServer] drain: executing task '%s'", lbl.c_str());
         try {
             task.fn();
@@ -426,51 +445,74 @@ static std::string toolFail(const std::string& text) {
 // thread still inside the request — and a menu action may delete modules or
 // block the UI thread in an osdialog. This hidden Scene-level widget (the Scene
 // outlives patches) runs one queued function on its next step(), outside the
-// rack's child iteration. One slot: a second schedule while one is pending is
-// a caller error, never an overwrite.
+// rack's child iteration. A FIFO: scheduling while one is pending queues behind
+// it, and step() runs exactly one function per frame — so an action that opens a
+// modal never swallows the one queued after it.
 static std::mutex g_deferredMutex;
-static std::function<void()> g_deferredFn;
+static std::deque<std::function<void()>> g_deferredQueue;
 
 struct DeferredUiTask : widget::Widget {
     void step() override {
         std::function<void()> fn;
-        { std::lock_guard<std::mutex> lk(g_deferredMutex); fn.swap(g_deferredFn); }
+        {
+            std::lock_guard<std::mutex> lk(g_deferredMutex);
+            if (g_deferredQueue.empty()) return;
+            fn = std::move(g_deferredQueue.front());
+            g_deferredQueue.pop_front();
+        }
         if (!fn) return;
         try { fn(); }
         catch (std::exception& e) { WARN("[RackMcpServer] deferred task failed: %s", e.what()); }
     }
 };
 
-// UI thread only. Idempotent. The Scene deletes the widget at shutdown.
-static void ensureDeferredRunner() {
-    static DeferredUiTask* runner = nullptr;
-    if ((runner && runner->parent) || !APP->scene) return;
-    runner = new DeferredUiTask;
-    runner->visible = false;   // "Disables rendering but allow stepping" — Widget.hpp:27
-    APP->scene->addChild(runner);
+// UI thread only. Idempotent. The Scene deletes the widget at shutdown, and the
+// WeakPtr reads null once it has — so we install a fresh one instead of chasing
+// a dangling pointer. False if there is no Scene to attach to.
+static bool ensureDeferredRunner() {
+    static WeakPtr<DeferredUiTask> runner;
+    DeferredUiTask* r = runner.get();
+    if (r && r->parent) return true;
+    if (!APP->scene) return false;
+    r = new DeferredUiTask;
+    r->visible = false;   // "Disables rendering but allow stepping" — Widget.hpp:27
+    APP->scene->addChild(r);
+    runner = r;
+    return true;
 }
 
-// UI thread only. False if a task is already waiting for its frame.
+// UI thread only. False only if there is no runner to run the task.
 static bool scheduleDeferred(std::function<void()> fn) {
-    ensureDeferredRunner();
+    if (!ensureDeferredRunner()) return false;
     std::lock_guard<std::mutex> lk(g_deferredMutex);
-    if (g_deferredFn) return false;
-    g_deferredFn = std::move(fn);
+    g_deferredQueue.push_back(std::move(fn));
     return true;
 }
 
 // ─── Context menus, built exactly as a right-click would ───────────────────
 // ModuleWidget::createContextMenu() → createMenu() news a MenuOverlay, adds a
 // Menu to it and appends the overlay to APP->scene, then Rack adds its standard
-// entries and calls the module's appendContextMenu(). We take that overlay from
-// the end of the Scene's child list and delete it in the same step pass, so it
-// is never drawn.
+// entries and calls the module's appendContextMenu(). We take the last overlay
+// added past the pre-call child count and delete it in the same step pass, so it
+// is never drawn. Anything else appended is not ours — request its deletion too.
 
 static ui::MenuOverlay* openContextMenu(app::ModuleWidget* mw) {
     size_t before = APP->scene->children.size();
     mw->createContextMenu();
-    if (APP->scene->children.size() <= before) return nullptr;
-    return dynamic_cast<ui::MenuOverlay*>(APP->scene->children.back());
+    ui::MenuOverlay* overlay = nullptr;
+    std::vector<widget::Widget*> strays;
+    size_t i = 0;
+    for (widget::Widget* w : APP->scene->children) {
+        if (i++ < before) continue;
+        if (auto* o = dynamic_cast<ui::MenuOverlay*>(w)) {
+            if (overlay) strays.push_back(overlay);   // an earlier overlay: not the top one
+            overlay = o;
+        } else {
+            strays.push_back(w);
+        }
+    }
+    for (widget::Widget* w : strays) w->requestDelete();
+    return overlay;
 }
 
 static ui::Menu* topMenu(ui::MenuOverlay* overlay) {
@@ -484,10 +526,14 @@ static std::vector<MenuItemInfo> collectMenuItems(app::ModuleWidget* mw) {
     std::vector<MenuItemInfo> out;
     ui::MenuOverlay* overlay = openContextMenu(mw);
     if (!overlay) return out;
+    // Whatever throws below — createChildMenu(), plugin code — the overlay must
+    // not survive the frame, or it is drawn full-screen and eats every event.
+    DEFER({ overlay->requestDelete(); });
     if (ui::Menu* menu = topMenu(overlay)) {
         for (widget::Widget* w : menu->children) {
             auto* item = dynamic_cast<ui::MenuItem*>(w);
             if (!item) continue;
+            item->step();   // createCheckMenuItem() only sets rightText in step()
             out.push_back({{item->text}, item->rightText, item->disabled});
             ui::Menu* child = item->createChildMenu();
             if (!child) continue;
@@ -495,12 +541,12 @@ static std::vector<MenuItemInfo> collectMenuItems(app::ModuleWidget* mw) {
             for (widget::Widget* cw : child->children) {
                 auto* ci = dynamic_cast<ui::MenuItem*>(cw);
                 if (!ci) continue;
+                ci->step();   // ditto for createIndexSubmenuItem()
                 out.push_back({{item->text, ci->text}, ci->rightText, ci->disabled});
             }
             menu->setChildMenu(NULL);
         }
     }
-    overlay->requestDelete();
     return out;
 }
 
@@ -509,6 +555,7 @@ static std::vector<MenuItemInfo> collectMenuItems(app::ModuleWidget* mw) {
 static bool invokeMenuPath(app::ModuleWidget* mw, const std::vector<std::string>& path) {
     ui::MenuOverlay* overlay = openContextMenu(mw);
     if (!overlay) return false;
+    DEFER({ overlay->requestDelete(); });   // also covers a throw out of doAction()
     ui::MenuItem* target = nullptr;
     if (ui::Menu* menu = topMenu(overlay)) {
         for (widget::Widget* w : menu->children) {
@@ -525,9 +572,13 @@ static bool invokeMenuPath(app::ModuleWidget* mw, const std::vector<std::string>
             if (target) break;
         }
     }
-    if (!target) { overlay->requestDelete(); return false; }
+    // MenuItem::onDragDrop gates on !disabled; doAction() does not, so gate here.
+    if (target && target->disabled) {
+        WARN("[RackMcpServer] menu_invoke: item is disabled: %s", path.back().c_str());
+        target = nullptr;
+    }
+    if (!target) return false;
     target->doAction();          // consumed by default → the overlay requests its own deletion
-    overlay->requestDelete();    // idempotent; covers an action that left the event unconsumed
     return true;
 }
 
