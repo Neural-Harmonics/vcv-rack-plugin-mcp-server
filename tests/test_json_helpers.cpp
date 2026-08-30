@@ -11,6 +11,7 @@
 #include <cassert>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 // ─── Copy of helpers under test (keep in sync with src/RackMcpServer.cpp) ───
 
@@ -81,6 +82,54 @@ static std::string jsonUnescape(const std::string& s) {
         }
     }
     return out;
+}
+
+// Values of "key": ["a", "b"]; empty if the key or the array is missing.
+static std::vector<std::string> parseJsonStringArray(const std::string& json, const std::string& key) {
+    std::vector<std::string> out;
+    size_t k = json.find("\"" + key + "\"");
+    if (k == std::string::npos) return out;
+    size_t open = json.find('[', k);
+    if (open == std::string::npos) return out;
+    size_t i = open + 1;
+    while (i < json.size() && json[i] != ']') {
+        if (json[i] == '"') {
+            size_t j = i + 1;
+            std::string raw;
+            while (j < json.size() && json[j] != '"') {
+                if (json[j] == '\\' && j + 1 < json.size()) raw += json[j++];
+                raw += json[j++];
+            }
+            out.push_back(jsonUnescape(raw));
+            i = j + 1;
+        } else {
+            i++;
+        }
+    }
+    return out;
+}
+
+struct MenuItemInfo {
+    std::vector<std::string> path;   // ["Label"] or ["Label", "Sub label"]
+    std::string right;               // Rack's rightText: "✔" for checked, "▸" for submenu, else ""
+    bool disabled = false;
+};
+
+static std::string pathJson(const std::vector<std::string>& path) {
+    std::string s = "[";
+    for (size_t j = 0; j < path.size(); j++) { if (j) s += ", "; s += jsonStr(path[j]); }
+    return s + "]";
+}
+
+static std::string menuItemsJson(long long moduleId, const std::vector<MenuItemInfo>& items) {
+    std::string s = "{" + jsonKV("module_id", std::to_string(moduleId)) + "\"items\": [";
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i) s += ", ";
+        s += "{\"path\": " + pathJson(items[i].path) + ", "
+           + jsonKVs("right", items[i].right)
+           + jsonKV("disabled", items[i].disabled ? "true" : "false", true) + "}";
+    }
+    return s + "]}";
 }
 
 // ─── Minimal test framework ──────────────────────────────────────────────────
@@ -197,6 +246,26 @@ void test_round_trip_ok() {
     CHECK("sampleRate present",    resp.find("44100") != std::string::npos);
 }
 
+void test_parseJsonStringArray() {
+    printf("\nparseJsonStringArray()\n");
+    auto p = parseJsonStringArray("{\"module_id\": 5, \"path\": [\"Polyphony channels\", \"4\"]}", "path");
+    CHECK("array of two",          p.size() == 2 && p[0] == "Polyphony channels" && p[1] == "4");
+    CHECK("missing key -> empty",  parseJsonStringArray("{\"x\": [\"a\"]}", "path").empty());
+    CHECK("empty array",           parseJsonStringArray("{\"path\": []}", "path").empty());
+    auto q = parseJsonStringArray("{\"path\":[\"Say \\\"hi\\\"\"]}", "path");
+    CHECK("escaped quote unescaped", q.size() == 1 && q[0] == "Say \"hi\"");
+}
+
+void test_menuItemsJson() {
+    printf("\nmenuItemsJson()\n");
+    std::vector<MenuItemInfo> items = {{{"Initialize"}, "", false}, {{"Polyphony channels", "4"}, "\xe2\x9c\x94", true}};
+    CHECK("menu items json",
+          menuItemsJson(5, items) ==
+          "{\"module_id\": 5, \"items\": [{\"path\": [\"Initialize\"], \"right\": \"\", \"disabled\": false}, "
+          "{\"path\": [\"Polyphony channels\", \"4\"], \"right\": \"\xe2\x9c\x94\", \"disabled\": true}]}");
+    CHECK("empty items",           menuItemsJson(7, {}) == "{\"module_id\": 7, \"items\": []}");
+}
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
 int main() {
@@ -211,6 +280,8 @@ int main() {
     test_parseJsonDouble();
     test_jsonUnescape();
     test_round_trip_ok();
+    test_parseJsonStringArray();
+    test_menuItemsJson();
 
     printf("\n%s\n", std::string(50, '-').c_str());
     printf("Results: %d passed, %d failed\n", pass_count, fail_count);

@@ -110,6 +110,29 @@ static std::string jsonKVs(const std::string& k, const std::string& s, bool last
     return jsonStr(k) + ": " + jsonStr(s) + (last ? "" : ", ");
 }
 
+struct MenuItemInfo {
+    std::vector<std::string> path;   // ["Label"] or ["Label", "Sub label"]
+    std::string right;               // Rack's rightText: "✔" for checked, "▸" for submenu, else ""
+    bool disabled = false;
+};
+
+static std::string pathJson(const std::vector<std::string>& path) {
+    std::string s = "[";
+    for (size_t j = 0; j < path.size(); j++) { if (j) s += ", "; s += jsonStr(path[j]); }
+    return s + "]";
+}
+
+static std::string menuItemsJson(int64_t moduleId, const std::vector<MenuItemInfo>& items) {
+    std::string s = "{" + jsonKV("module_id", std::to_string(moduleId)) + "\"items\": [";
+    for (size_t i = 0; i < items.size(); i++) {
+        if (i) s += ", ";
+        s += "{\"path\": " + pathJson(items[i].path) + ", "
+           + jsonKVs("right", items[i].right)
+           + jsonKV("disabled", items[i].disabled ? "true" : "false", true) + "}";
+    }
+    return s + "]}";
+}
+
 static std::string ok(const std::string& body) {
     return "{" + jsonKVs("status", "ok") + jsonKV("data", body, true) + "}";
 }
@@ -281,6 +304,31 @@ static double parseJsonDouble(const std::string& json, const std::string& key, d
     // Handle quoted string numbers (AI sometimes sends numbers as JSON strings)
     if (pos < json.size() && json[pos] == '"') pos++;
     try { return std::stod(json.substr(pos)); } catch (...) { return def; }
+}
+
+// Values of "key": ["a", "b"]; empty if the key or the array is missing.
+static std::vector<std::string> parseJsonStringArray(const std::string& json, const std::string& key) {
+    std::vector<std::string> out;
+    size_t k = json.find("\"" + key + "\"");
+    if (k == std::string::npos) return out;
+    size_t open = json.find('[', k);
+    if (open == std::string::npos) return out;
+    size_t i = open + 1;
+    while (i < json.size() && json[i] != ']') {
+        if (json[i] == '"') {
+            size_t j = i + 1;
+            std::string raw;
+            while (j < json.size() && json[j] != '"') {
+                if (json[j] == '\\' && j + 1 < json.size()) raw += json[j++];
+                raw += json[j++];
+            }
+            out.push_back(jsonUnescape(raw));
+            i = j + 1;
+        } else {
+            i++;
+        }
+    }
+    return out;
 }
 
 // Extract raw JSON value (string, number, object, array, bool, null) by key
